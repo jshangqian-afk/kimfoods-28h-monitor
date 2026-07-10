@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>28時間監視 - kimfoods</title>
+  <title>28時間管理 - kimfoods</title>
   <style>
     :root {
       --ok: #16a34a; --warn: #d97706; --over: #dc2626;
@@ -117,7 +117,7 @@
 </head>
 <body>
   <header>
-    <h1>28時間監視</h1>
+    <h1>28時間管理</h1>
     <nav>
       <button data-screen="dash" class="active">ダッシュボード</button>
       <button data-screen="input">打刻入力</button>
@@ -432,10 +432,10 @@
       try {
         const list = await apiGet('getStaff', { all: '1' });
         if (!list.length) { $('#mList').innerHTML = '<div class="loading">メンバーがいません。上のフォームから追加してください。</div>'; return; }
-        $('#mList').innerHTML = `<table><thead><tr><th>番号</th><th>氏名</th><th>在留資格</th><th class="num">上限(時)</th><th>状態</th><th>操作</th></tr></thead><tbody>${
+        $('#mList').innerHTML = `<table><thead><tr><th>番号</th><th>氏名</th><th>在留資格</th><th>上限（週）</th><th>状態</th><th>操作</th></tr></thead><tbody>${
           list.map(s => `<tr>
             <td>${esc(s.staffId)}</td><td>${esc(s.name)}</td><td>${esc(s.shikaku)}</td>
-            <td class="num">${(s.upperMin/60).toFixed(s.upperMin%60?1:0)}</td>
+            <td>${upperSelect(s)}</td>
             <td>${s.active ? '<span class="tag OK">在籍</span>' : '<span class="tag off">退職</span>'}</td>
             <td>${s.active
               ? `<button class="btn ghost small" data-retire="${esc(s.staffId)}">退職</button>`
@@ -444,6 +444,28 @@
         }</tbody></table>`;
       } catch (e) { $('#mList').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
     }
+    // 上限の切替（28時間 通常 ⇄ 40時間 長期休業例外）。警告は上限の2時間下に自動設定。
+    function upperSelect(s) {
+      const isStd = s.upperMin === 1680, isExc = s.upperMin === 2400;
+      const custom = (!isStd && !isExc) ? `<option value="${s.upperMin}" selected>${(s.upperMin/60).toFixed(s.upperMin%60?1:0)}時間</option>` : '';
+      return `<select class="upper-sel" data-staff="${esc(s.staffId)}">
+        ${custom}
+        <option value="1680" ${isStd ? 'selected' : ''}>28時間（通常）</option>
+        <option value="2400" ${isExc ? 'selected' : ''}>40時間（長期休業）</option>
+      </select>`;
+    }
+    $('#mList').addEventListener('change', async (e) => {
+      const sel = e.target.closest('.upper-sel'); if (!sel) return;
+      const staffId = sel.dataset.staff;
+      const upperMin = parseInt(sel.value, 10);
+      const warnMin = Math.max(0, upperMin - 120); // 上限の2時間下
+      const label = upperMin === 2400 ? '40時間（長期休業）' : upperMin === 1680 ? '28時間（通常）' : (upperMin/60) + '時間';
+      try {
+        await apiPost({ action: 'updateStaff', staffId, upperMin, warnMin });
+        const msg = $('#mMsg'); msg.className = 'save-msg ok'; msg.textContent = `上限を ${label} に変更しました（${staffName(staffId)}）。`;
+        await loadMemberList();
+      } catch (err) { const msg = $('#mMsg'); msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + err.message; }
+    });
     $('#mList').addEventListener('click', async (e) => {
       const ret = e.target.dataset.retire, res = e.target.dataset.restore;
       if (ret && confirm('このメンバーを退職（監視対象から外す）にしますか？記録は残ります。')) {
