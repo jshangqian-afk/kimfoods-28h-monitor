@@ -123,6 +123,7 @@
       <button data-screen="input">打刻入力</button>
       <button data-screen="detail">スタッフ詳細</button>
       <button data-screen="member">メンバー</button>
+      <button data-screen="vacation">長期休業</button>
     </nav>
   </header>
 
@@ -206,8 +207,27 @@
       </div>
       <div class="save-msg" id="mMsg"></div>
       <div class="hint">上限28時間＝通常。長期休業中の週40時間例外を使う人は上限40に。監視対象は在留資格「留学」のみ。</div>
+      <div class="hint">「上限」は通常時の基準です。長期休業中の自動40時間は「長期休業」タブで期間を登録してください（40時間 常時 は、休業に関係なく常に40時間の特例者用）。</div>
       <h3>メンバー一覧</h3>
       <div id="mList"><div class="loading">読み込み中…</div></div>
+    </section>
+
+    <!-- ============ 画面5: 長期休業 ============ -->
+    <section id="vacation" class="screen">
+      <h3>長期休業期間の登録</h3>
+      <div class="toolbar">
+        <div class="field"><label>名称</label><input type="text" id="vName" placeholder="例: 夏休み" style="width:160px"></div>
+        <div class="field"><label>開始日</label><input type="date" id="vFrom"></div>
+        <div class="field"><label>終了日</label><input type="date" id="vTo"></div>
+        <button class="btn" id="vAdd">追加</button>
+      </div>
+      <div class="save-msg" id="vMsg"></div>
+      <div class="hint">
+        登録した期間中は、上限が<b>自動で週40時間</b>になります（終われば自動で28時間に戻る）。<br>
+        判定は安全側：<b>7日間すべてが休業期間に入っている窓だけ40時間</b>。休業の開始・終了をまたぐ窓は通常の28時間で判定します。
+      </div>
+      <h3>登録済みの期間</h3>
+      <div id="vList"><div class="loading">読み込み中…</div></div>
     </section>
   </main>
 
@@ -258,6 +278,7 @@
       $$('.screen').forEach(s => s.classList.remove('active'));
       $('#' + btn.dataset.screen).classList.add('active');
       if (btn.dataset.screen === 'member') loadMemberList();
+      if (btn.dataset.screen === 'vacation') loadVacations();
     }));
 
     // ====== スタッフ一覧（共有・打刻/詳細の選択肢） ======
@@ -419,7 +440,8 @@
           d.windows.map(w => {
             const dayMin = w.days[0] ? w.days[0].minsHHMM : '0:00';
             const tag = w.inProgress ? '<span class="tag PROG">進行中</span>' : `<span class="tag ${w.status}">${w.status}</span>`;
-            return `<tr class="${w.inProgress ? '' : w.status}"><td>${w.startDate}</td><td class="num">${dayMin}</td><td class="num"><b>${w.sumHHMM}</b></td><td>${tag}${w.inProgress ? ` <span class="hint">残り${fmtMin(w.remainingToUpper)}</span>` : ''}</td></tr>`;
+            const vac = w.inVacation ? ' <span class="tag" style="background:#0891b2">休業40h</span>' : '';
+            return `<tr class="${w.inProgress ? '' : w.status}"><td>${w.startDate}</td><td class="num">${dayMin}</td><td class="num"><b>${w.sumHHMM}</b></td><td>${tag}${vac}${w.inProgress ? ` <span class="hint">残り${fmtMin(w.remainingToUpper)}</span>` : ''}</td></tr>`;
           }).join('')
         }</tbody></table>`;
       } catch (e) { $('#detTableWrap').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
@@ -450,8 +472,8 @@
       const custom = (!isStd && !isExc) ? `<option value="${s.upperMin}" selected>${(s.upperMin/60).toFixed(s.upperMin%60?1:0)}時間</option>` : '';
       return `<select class="upper-sel" data-staff="${esc(s.staffId)}">
         ${custom}
-        <option value="1680" ${isStd ? 'selected' : ''}>28時間（通常）</option>
-        <option value="2400" ${isExc ? 'selected' : ''}>40時間（長期休業）</option>
+        <option value="1680" ${isStd ? 'selected' : ''}>28時間（標準）</option>
+        <option value="2400" ${isExc ? 'selected' : ''}>40時間（常時）</option>
       </select>`;
     }
     $('#mList').addEventListener('change', async (e) => {
@@ -491,6 +513,39 @@
         $('#mName').value = ''; $('#mId').value = '';
         await loadMemberList(); await loadStaff();
       } catch (e) { msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message; }
+    });
+
+    // ====== 画面5: 長期休業 ======
+    async function loadVacations() {
+      $('#vList').innerHTML = '<div class="loading">読み込み中…</div>';
+      try {
+        const list = await apiGet('getVacations');
+        if (!list.length) { $('#vList').innerHTML = '<div class="loading">登録された長期休業期間はありません。</div>'; return; }
+        $('#vList').innerHTML = `<table><thead><tr><th>名称</th><th>開始日</th><th>終了日</th><th>操作</th></tr></thead><tbody>${
+          list.map(v => `<tr>
+            <td>${esc(v.name || '（無名）')}</td><td>${v.from}</td><td>${v.to}</td>
+            <td><button class="btn danger small" data-vfrom="${v.from}" data-vto="${v.to}">削除</button></td>
+          </tr>`).join('')
+        }</tbody></table>`;
+      } catch (e) { $('#vList').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
+    }
+    $('#vAdd').addEventListener('click', async () => {
+      const msg = $('#vMsg');
+      const from = dateInputToApi($('#vFrom').value), to = dateInputToApi($('#vTo').value);
+      if (!from || !to) { msg.className = 'save-msg over'; msg.textContent = '開始日と終了日を入力してください'; return; }
+      try {
+        await apiPost({ action: 'addVacation', name: $('#vName').value.trim(), from, to });
+        msg.className = 'save-msg ok'; msg.textContent = `追加しました: ${from} 〜 ${to}`;
+        $('#vName').value = '';
+        await loadVacations();
+      } catch (e) { msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message; }
+    });
+    $('#vList').addEventListener('click', async (e) => {
+      const from = e.target.dataset.vfrom, to = e.target.dataset.vto;
+      if (from && confirm(`長期休業期間 ${from}〜${to} を削除しますか？`)) {
+        try { await apiPost({ action: 'deleteVacation', from, to }); await loadVacations(); }
+        catch (err) { alert('削除エラー: ' + err.message); }
+      }
     });
 
     // ====== 初期化 ======
