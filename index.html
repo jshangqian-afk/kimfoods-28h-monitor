@@ -277,6 +277,8 @@
       btn.classList.add('active');
       $$('.screen').forEach(s => s.classList.remove('active'));
       $('#' + btn.dataset.screen).classList.add('active');
+      if (btn.dataset.screen === 'dash') loadDashboard();   // 開くたび最新を再取得
+      if (btn.dataset.screen === 'input') loadLogList();
       if (btn.dataset.screen === 'member') loadMemberList();
       if (btn.dataset.screen === 'vacation') loadVacations();
     }));
@@ -357,7 +359,7 @@
       const msg = $('#saveMsg'); $('#saveBtn').disabled = true;
       try {
         let r;
-        if (editingLogId) r = await apiPost({ action: 'updateLog', logId: editingLogId, date, start, end, brk });
+        if (editingLogId) r = await apiPost({ action: 'updateLog', logId: editingLogId, staffId, date, start, end, brk });
         else r = await apiPost({ action: 'addLog', staffId, date, start, end, brk });
         // この日を含む窓が28hを超えないか（ブロックしない）
         const det = await apiGet('getStaffDetail', { staffId, from: addDaysApi(date, -6), to: date, today: date });
@@ -373,6 +375,7 @@
         }
         resetInputForm();
         await loadLogList();
+        loadDashboard(); // 保存/更新をダッシュボードへ即反映
       } catch (e) { msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message; }
       finally { $('#saveBtn').disabled = false; }
     }
@@ -416,7 +419,7 @@
         window.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (del) {
         if (!confirm(`${e.target.dataset.date} の記録を削除しますか？`)) return;
-        try { await apiPost({ action: 'deleteLog', logId: del }); await loadLogList(); }
+        try { await apiPost({ action: 'deleteLog', logId: del }); await loadLogList(); loadDashboard(); }
         catch (err) { alert('削除エラー: ' + err.message); }
       }
     });
