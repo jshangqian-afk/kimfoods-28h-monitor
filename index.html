@@ -71,6 +71,17 @@
     .metric .v { font-size: 24px; font-weight: 700; }
     .metric .v.warn { color: var(--warn); } .metric .v.over { color: var(--over); }
     .worst { margin-top: 10px; font-size: 14px; color: var(--muted); }
+    .sim-btn { margin-top: 12px; }
+    .sim-panel { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
+    .sim-summary { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+    .sim-summary.over { color: var(--over); }
+    .sim-table { width: 100%; border-collapse: collapse; }
+    .sim-table th, .sim-table td { padding: 7px 6px; border-bottom: 1px solid var(--line); font-size: 15px; text-align: left; }
+    .sim-table th { color: var(--muted); font-size: 12px; }
+    .sim-table select { font-size: 16px; padding: 8px 4px; min-height: 40px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .sim-table tr.over td { background: var(--over-bg); }
+    .sim-frame { font-weight: 700; white-space: nowrap; }
+    .sim-frame .ng { color: var(--over); }
 
     /* --- 入力 --- */
     .input-grid { display: grid; grid-template-columns: 1fr 340px; gap: 24px; align-items: start; }
@@ -293,12 +304,25 @@
     }
     const staffName = (id) => { const s = STAFF.find(x => x.staffId === id); return s ? s.name : id; };
 
-    // ====== 画面1: ダッシュボード ======
+    // ====== 画面1: ダッシュボード ＋ シミュレーション ======
+    let DASH_TODAY = '';        // 基準日（サーバのAsia/Tokyo当日）
+    const SIM = {};             // staffId -> {upperMin, base, simMins}
+    const DOW = ['日', '月', '火', '水', '木', '金', '土'];
+    // 日付文字列 → エポック日数（内部計算のみ。値は文字列で扱う方針を維持）
+    function epochDayF(apiDate) { const [y, m, d] = apiDate.split('/').map(Number); return Math.floor(Date.UTC(y, m - 1, d) / 86400000); }
+    function dowJ(ed) { return DOW[((ed % 7) + 4) % 7]; }
+    // 枠(d)=upperMin−Σ(d-6..d-1)。Core.gs の calcDailyAllowance_ と同一式（受け入れテストで一致を検証済み）。
+    function dailyAllowanceMin(minsByDay, dayEd, upperMin) {
+      let s = 0; for (let k = 1; k <= 6; k++) s += (minsByDay[dayEd - k] || 0);
+      return upperMin - s;
+    }
+
     async function loadDashboard() {
       const today = dateInputToApi($('#dashToday').value) || todayApi();
       $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>';
       try {
         const d = await apiGet('getDashboard', { today });
+        DASH_TODAY = d.today;
         $('#dashBanner').classList.toggle('show', d.anyOver);
         $('#dashBanner').textContent = d.anyOver ? '⚠ 28時間超過のスタッフがいます' : '';
         if (!d.cards.length) { $('#dashCards').innerHTML = '<div class="loading">監視対象（在留資格「留学」の在籍者）がいません。「メンバー」から追加してください。</div>'; return; }
@@ -311,10 +335,104 @@
               <div class="metric"><div class="k">直近7日 実績</div><div class="v">${c.last7HHMM}</div></div>
               <div class="metric"><div class="k">明日 働ける残り</div><div class="v ${allowClass}">${c.tomorrowAllowanceHHMM}</div></div>
             </div>
-            <div class="worst">${worst}</div></div>`;
+            <div class="worst">${worst}</div>
+            <button class="btn ghost small sim-btn" data-staff="${esc(c.staffId)}">シミュレーション</button>
+            <div class="sim-panel" id="sim-${esc(c.staffId)}" style="display:none"></div>
+          </div>`;
         }).join('');
       } catch (e) { $('#dashCards').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
     }
+
+    // カードのシミュレーション欄を開閉（同時に開くのは1枚）
+    async function toggleSim(staffId) {
+      const panel = document.getElementById('sim-' + staffId);
+      if (!panel) return;
+      const wasOpen = panel.dataset.open === '1';
+      document.querySelectorAll('.sim-panel').forEach(p => { p.style.display = 'none'; p.dataset.open = ''; });
+      if (wasOpen) return; // 再タップで閉じる
+      panel.style.display = 'block'; panel.dataset.open = '1';
+      panel.innerHTML = '<div class="loading">読み込み中…</div>';
+      try {
+        const staff = STAFF.find(s => s.staffId === staffId);
+        const upperMin = staff ? staff.upperMin : 1680;
+        const base = DASH_TODAY;
+        // 実績は既存API。枠(翌日)に効く直近6日分（base-5..base）を取得。
+        const daily = await apiGet('getDailyMinutes', { staffId, from: addDaysApi(base, -5), to: base });
+        const simMins = {};
+        Object.keys(daily).forEach(dt => { simMins[epochDayF(dt)] = daily[dt]; });
+        const rows = [];
+        for (let i = 1; i <= 7; i++) {
+          const date = addDaysApi(base, i);
+          const ed = epochDayF(date);
+          const md = date.split('/');
+          const label = `${Number(md[1])}/${Number(md[2])}(${dowJ(ed)})`;
+          const hOpts = [0,1,2,3,4,5,6,7,8].map(h => `<option value="${h}">${h}</option>`).join('');
+          const mOpts = ['00','15','30','45'].map(m => `<option value="${m}">${m}</option>`).join('');
+          rows.push(`<tr data-ed="${ed}">
+            <td>${label}</td>
+            <td><select class="sim-h">${hOpts}</select>時 <select class="sim-m">${mOpts}</select>分</td>
+            <td class="sim-frame"></td>
+          </tr>`);
+        }
+        panel.innerHTML = `<div class="sim-summary" id="simsum-${esc(staffId)}"></div>
+          <table class="sim-table"><thead><tr><th>日付</th><th>予定</th><th>働ける枠</th></tr></thead><tbody>${rows.join('')}</tbody></table>
+          <div class="hint">予定を入れると、それ以降の日の枠が即座に変わります（保存はされません・試算専用）。</div>`;
+        SIM[staffId] = { upperMin, base, simMins };
+        recalcSim(staffId);
+      } catch (e) { panel.innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
+    }
+
+    // 予定変更のたびに、それ以降の全行の枠を再計算（GASは呼ばない）
+    function recalcSim(staffId) {
+      const st = SIM[staffId]; if (!st) return;
+      const panel = document.getElementById('sim-' + staffId);
+      const trs = Array.from(panel.querySelectorAll('tbody tr'));
+      // 先に全行の予定を simMins へ反映（枠は直前6日を見るため順序依存）
+      trs.forEach(tr => {
+        const ed = Number(tr.dataset.ed);
+        const h = Number(tr.querySelector('.sim-h').value);
+        const m = Number(tr.querySelector('.sim-m').value);
+        st.simMins[ed] = h * 60 + m;
+      });
+      let worst = null;
+      trs.forEach(tr => {
+        const ed = Number(tr.dataset.ed);
+        const frame = dailyAllowanceMin(st.simMins, ed, st.upperMin);
+        const planned = st.simMins[ed] || 0;
+        const cell = tr.querySelector('.sim-frame');
+        tr.classList.remove('over');
+        if (frame <= 0) {
+          cell.innerHTML = '<span class="ng">出勤不可</span>';
+          tr.classList.add('over');
+        } else if (planned > frame) {
+          cell.innerHTML = `枠 ${fmtMin(frame)} <span class="ng">（超過！）</span>`;
+          tr.classList.add('over');
+        } else {
+          cell.textContent = `枠 ${fmtMin(frame)}`;
+        }
+        // 超過（予定>枠 または 枠<=0で予定あり）を記録
+        if ((frame <= 0 && planned > 0) || (frame > 0 && planned > frame)) {
+          if (!worst) worst = tr.querySelector('td').textContent;
+        }
+      });
+      const sum = document.getElementById('simsum-' + staffId);
+      if (sum) {
+        if (worst) { sum.className = 'sim-summary over'; sum.textContent = `⚠ ${worst} の予定が枠を超えます`; }
+        else { sum.className = 'sim-summary'; sum.textContent = '予定を入れて、働ける枠の推移を確認できます'; }
+      }
+    }
+
+    // カード内のボタン/プルダウンはイベント委譲（カード再描画に強い）
+    $('#dashCards').addEventListener('click', (e) => {
+      const b = e.target.closest('.sim-btn');
+      if (b) toggleSim(b.dataset.staff);
+    });
+    $('#dashCards').addEventListener('change', (e) => {
+      const panel = e.target.closest('.sim-panel');
+      if (panel && (e.target.classList.contains('sim-h') || e.target.classList.contains('sim-m'))) {
+        recalcSim(panel.id.replace('sim-', ''));
+      }
+    });
 
     // ====== 画面2: 打刻入力 ======
     const timeDigits = { start: '', end: '', brk: '' };
