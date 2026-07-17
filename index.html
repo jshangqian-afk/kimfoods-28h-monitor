@@ -50,6 +50,7 @@
       padding: 12px 22px; font-size: 16px; font-weight: 700; min-height: 44px; cursor: pointer;
     }
     .btn:active { background: var(--primary-d); }
+    .btn:disabled { opacity: 0.6; cursor: default; }
     .btn.ghost { background: #e5e7eb; color: var(--text); }
     .btn.danger { background: var(--over); }
     .btn.small { padding: 8px 14px; font-size: 14px; min-height: 38px; }
@@ -105,8 +106,12 @@
     .keypad button.util { background: #f3f4f6; font-size: 18px; }
 
     .save-msg { margin-top: 14px; padding: 12px 14px; border-radius: 10px; font-weight: 600; display: none; }
+    .save-msg.saving { display: block; background: #dbeafe; color: #1e40af; }
     .save-msg.ok { display: block; background: var(--ok-bg); color: #065f46; }
     .save-msg.over { display: block; background: var(--over-bg); color: #991b1b; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px;
+      border: 2px solid #93c5fd; border-top-color: #1e40af; border-radius: 50%; animation: spin 0.7s linear infinite; }
 
     /* --- テーブル共通 --- */
     .summary { display: flex; gap: 24px; flex-wrap: wrap; margin: 8px 0 16px; }
@@ -481,7 +486,13 @@
       const date = dateInputToApi($('#inDate').value);
       if (!staffId || !date) { alert('スタッフと日付を選んでください'); return; }
       const start = digitsToHHMM(timeDigits.start), end = digitsToHHMM(timeDigits.end), brk = digitsToHHMM(timeDigits.brk);
-      const msg = $('#saveMsg'); $('#saveBtn').disabled = true;
+      const verb = editingLogId ? '更新' : '保存';
+      const msg = $('#saveMsg'), btn = $('#saveBtn');
+      const origText = btn.textContent;
+      // 保存中：ボタンを無効化（二度押し防止）＋「保存中…」を明示
+      btn.disabled = true; btn.textContent = verb + '中…';
+      msg.className = 'save-msg saving';
+      msg.innerHTML = `<span class="spinner"></span>${verb}しています…`;
       try {
         let r;
         if (editingLogId) r = await apiPost({ action: 'updateLog', logId: editingLogId, staffId, date, start, end, brk });
@@ -489,20 +500,21 @@
         // この日を含む窓が28hを超えないか（ブロックしない）
         const det = await apiGet('getStaffDetail', { staffId, from: addDaysApi(date, -6), to: date, today: date });
         const overWins = det.windows.filter(w => w.status === 'OVER' && w.startDate <= date && date <= w.endDate);
-        const verb = editingLogId ? '更新' : '保存';
         if (overWins.length) {
           msg.className = 'save-msg over';
-          msg.innerHTML = `${verb}しました（実労働 ${r.jitsuHHMM}）。<br>⚠ この内容で次の窓が28時間を超えます:<br>` +
+          msg.innerHTML = `✓ ${verb}しました（実労働 ${r.jitsuHHMM}）。<br>⚠ この内容で次の窓が28時間を超えます:<br>` +
             overWins.map(w => `・${w.startDate}〜${w.endDate}　合計 <b>${w.sumHHMM}</b>`).join('<br>');
         } else {
           msg.className = 'save-msg ok';
-          msg.textContent = `${verb}しました（実労働 ${r.jitsuHHMM}）。28時間超過の窓は発生していません。`;
+          msg.textContent = `✓ ${verb}しました（実労働 ${r.jitsuHHMM}）。28時間超過の窓は発生していません。`;
         }
         resetInputForm();
         await loadLogList();
         loadDashboard(); // 保存/更新をダッシュボードへ即反映
-      } catch (e) { msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message; }
-      finally { $('#saveBtn').disabled = false; }
+      } catch (e) {
+        msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message;
+        btn.textContent = origText; // 失敗時はボタン文言を戻す（成功時はresetInputFormが戻す）
+      } finally { btn.disabled = false; }
     }
     $('#saveBtn').addEventListener('click', saveLog);
 
