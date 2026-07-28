@@ -86,6 +86,25 @@
       padding: 10px 12px; border-radius: 8px; font-size: 14px; font-weight: 600; margin-bottom: 14px;
     }
     .login-err.show { display: block; }
+    /* --- 変更履歴モーダル --- */
+    .modal-wrap {
+      position: fixed; inset: 0; background: rgba(17,24,39,.55); z-index: 90;
+      display: none; align-items: center; justify-content: center; padding: 20px;
+    }
+    .modal-wrap.show { display: flex; }
+    .modal-card {
+      background: var(--card); border-radius: 14px; padding: 22px 24px;
+      width: 100%; max-width: 860px; max-height: 84vh; overflow: auto;
+      box-shadow: 0 10px 30px rgba(0,0,0,.2);
+    }
+    .modal-card h3 { margin-top: 0; }
+    tr.voided td { background: #f9fafb; color: var(--muted); }
+    tr.voided td b { color: var(--muted); }
+    .audit-detail {
+      font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted);
+      word-break: break-all; max-width: 420px; display: inline-block;
+    }
+
     .key-reveal {
       background: #111827; color: #fff; border-radius: 10px; padding: 14px 16px; margin-top: 12px;
       font-family: ui-monospace, Menlo, monospace; font-size: 20px; letter-spacing: 3px; text-align: center;
@@ -199,6 +218,7 @@
       <button data-screen="member">メンバー</button>
       <button data-screen="vacation">長期休業</button>
       <button data-screen="users" id="navUsers" style="display:none">ユーザー</button>
+      <button data-screen="audit" id="navAudit" style="display:none">操作ログ</button>
     </nav>
     <div class="who"><b id="whoName">—</b><button id="logoutBtn">ログアウト</button></div>
   </header>
@@ -324,7 +344,29 @@
       <h3>ユーザー一覧</h3>
       <div id="uList"><div class="loading">読み込み中…</div></div>
     </section>
+
+    <!-- ============ 画面7: 操作ログ（管理者のみ） ============ -->
+    <section id="audit" class="screen">
+      <div class="toolbar">
+        <h3 style="margin:0">操作ログ</h3>
+        <button class="btn ghost small" id="aRefresh">更新</button>
+      </div>
+      <div class="hint">
+        打刻・メンバー・長期休業・ユーザー管理のすべての変更を、誰がいつ行ったかを新しい順に記録しています。<br>
+        打刻の「修正前の値」は打刻ログ側に行として残っており、記録一覧の「履歴」から確認できます。
+      </div>
+      <div id="aList"><div class="loading">読み込み中…</div></div>
+    </section>
   </main>
+  </div>
+
+  <!-- ============ 変更履歴モーダル ============ -->
+  <div class="modal-wrap" id="histWrap">
+    <div class="modal-card">
+      <h3 id="histTitle">変更履歴</h3>
+      <div id="histBody"><div class="loading">読み込み中…</div></div>
+      <div style="margin-top:16px"><button class="btn ghost" id="histClose">閉じる</button></div>
+    </div>
   </div>
 
   <script>
@@ -402,6 +444,7 @@
       if (btn.dataset.screen === 'member') loadMemberList();
       if (btn.dataset.screen === 'vacation') loadVacations();
       if (btn.dataset.screen === 'users') loadUsers();
+      if (btn.dataset.screen === 'audit') loadAudit();
     }));
 
     // ====== スタッフ一覧（共有・打刻/詳細の選択肢） ======
@@ -638,19 +681,46 @@
         const logs = await apiGet('getLogs', { staffId, from: addDaysApi(base, -30), to: addDaysApi(base, 1) });
         if (!logs.length) { $('#logList').innerHTML = '<div class="loading">この期間の記録はありません。</div>'; return; }
         logs.sort((a, b) => a.date < b.date ? 1 : -1); // 新しい順
-        $('#logList').innerHTML = `<table><thead><tr><th>日付</th><th>開始</th><th>終了</th><th>休憩</th><th class="num">実労働</th><th>操作</th></tr></thead><tbody>${
+        $('#logList').innerHTML = `<table><thead><tr><th>日付</th><th>開始</th><th>終了</th><th>休憩</th><th class="num">実労働</th><th>入力者</th><th>操作</th></tr></thead><tbody>${
           logs.map(l => `<tr>
-            <td>${l.date}</td><td>${esc(l.start || '休')}</td><td>${esc(l.end || '')}</td><td>${esc(l.brk || '')}</td>
+            <td>${l.date}${l.prevLogId ? ' <span class="hint" style="display:inline">修正済</span>' : ''}</td>
+            <td>${esc(l.start || '休')}</td><td>${esc(l.end || '')}</td><td>${esc(l.brk || '')}</td>
             <td class="num">${fmtMin(l.jitsuMin)}</td>
+            <td>${esc(l.by || '—')}</td>
             <td><div class="row-actions">
               <button class="btn ghost small" data-edit="${l.logId}" data-date="${l.date}" data-s="${esc(l.start)}" data-e="${esc(l.end)}" data-b="${esc(l.brk)}">編集</button>
               <button class="btn danger small" data-del="${l.logId}" data-date="${l.date}">削除</button>
+              ${l.prevLogId ? `<button class="btn ghost small" data-hist="${l.logId}" data-date="${l.date}">履歴</button>` : ''}
             </div></td></tr>`).join('')
         }</tbody></table>`;
       } catch (e) { $('#logList').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
     }
+    // 変更履歴（打刻ログの系譜）。修正前の値・修正した人・日時をそのまま提示できる体裁にする。
+    async function showHistory(logId, dateLabel) {
+      $('#histWrap').classList.add('show');
+      $('#histTitle').textContent = `変更履歴（${dateLabel}）`;
+      $('#histBody').innerHTML = '<div class="loading">読み込み中…</div>';
+      try {
+        const h = await apiGet('getLogHistory', { logId });
+        $('#histBody').innerHTML = `<table><thead><tr><th>#</th><th>日付</th><th>開始</th><th>終了</th><th>休憩</th><th class="num">実労働</th><th>入力者</th><th>登録日時</th><th>状態</th></tr></thead><tbody>${
+          h.map((v, i) => `<tr class="${v.state === '有効' ? '' : 'voided'}">
+            <td>${i + 1}</td><td>${esc(v.date)}</td><td>${esc(v.start || '休')}</td><td>${esc(v.end)}</td><td>${esc(v.brk)}</td>
+            <td class="num">${esc(v.jitsuHHMM)}</td><td>${esc(v.by || '—')}</td><td>${esc(v.at || '—')}</td>
+            <td>${v.state === '有効'
+              ? '<b>現行</b>'
+              : `${esc(v.state)}<br><span class="hint" style="display:inline">${esc(v.voidedBy || '—')} / ${esc(v.voidedAt || '—')}</span>`}</td>
+          </tr>`).join('')
+        }</tbody></table>`;
+      } catch (e) { $('#histBody').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
+    }
+    $('#histClose').addEventListener('click', () => $('#histWrap').classList.remove('show'));
+    $('#histWrap').addEventListener('click', (e) => {
+      if (e.target === $('#histWrap')) $('#histWrap').classList.remove('show');
+    });
+
     $('#logList').addEventListener('click', async (e) => {
-      const ed = e.target.dataset.edit, del = e.target.dataset.del;
+      const ed = e.target.dataset.edit, del = e.target.dataset.del, hist = e.target.dataset.hist;
+      if (hist) { showHistory(hist, e.target.dataset.date); return; }
       if (ed) {
         editingLogId = ed;
         $('#inDate').value = apiToDateInput(e.target.dataset.date);
@@ -853,6 +923,22 @@
       } catch (err) { alert('エラー: ' + err.message); }
     });
 
+    // ====== 画面7: 操作ログ（管理者のみ） ======
+    async function loadAudit() {
+      $('#aList').innerHTML = '<div class="loading">読み込み中…</div>';
+      try {
+        const rows = await apiGet('getAuditLog', { limit: 300 });
+        if (!rows.length) { $('#aList').innerHTML = '<div class="loading">記録はまだありません。</div>'; return; }
+        $('#aList').innerHTML = `<table><thead><tr><th>日時</th><th>操作者</th><th>操作</th><th>対象</th><th>内容</th></tr></thead><tbody>${
+          rows.map(r => `<tr>
+            <td>${esc(r.at)}</td><td>${esc(r.by)}</td><td>${esc(r.action)}</td><td>${esc(r.target)}</td>
+            <td><span class="audit-detail">${esc(r.detail)}</span></td>
+          </tr>`).join('')
+        }</tbody></table>`;
+      } catch (e) { $('#aList').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
+    }
+    $('#aRefresh').addEventListener('click', loadAudit);
+
     // ====== ログイン ======
     function showLogin(message) {
       $('#app').classList.remove('ready');
@@ -907,6 +993,7 @@
     async function boot() {
       $('#whoName').textContent = SESSION ? SESSION.name : '—';
       $('#navUsers').style.display = isAdmin() ? '' : 'none';
+      $('#navAudit').style.display = isAdmin() ? '' : 'none';
       try { await loadStaff(); } catch (e) { if (e instanceof AuthError) return; console.error(e); }
       try { await loadLogList(); await loadDashboard(); } catch (e) { console.error(e); }
     }
