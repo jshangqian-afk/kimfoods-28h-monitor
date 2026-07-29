@@ -163,6 +163,7 @@
     .save-msg { margin-top: 14px; padding: 12px 14px; border-radius: 10px; font-weight: 600; display: none; }
     .save-msg.saving { display: block; background: #dbeafe; color: #1e40af; }
     .save-msg.ok { display: block; background: var(--ok-bg); color: #065f46; }
+    .save-msg.warn { display: block; background: var(--warn-bg); color: #92400e; }
     .save-msg.over { display: block; background: var(--over-bg); color: #991b1b; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px;
@@ -652,10 +653,15 @@
         // この日を含む窓が28hを超えないか（ブロックしない）
         const det = await apiGet('getStaffDetail', { staffId, from: addDaysApi(date, -6), to: date, today: date });
         const overWins = det.windows.filter(w => w.status === 'OVER' && w.startDate <= date && date <= w.endDate);
+        // 同日に別の打刻がある場合の注意（合算される旨）。保存はブロックしない。
+        const dup = r.warning ? `<br>⚠ ${esc(r.warning)}` : '';
         if (overWins.length) {
           msg.className = 'save-msg over';
-          msg.innerHTML = `✓ ${verb}しました（実労働 ${r.jitsuHHMM}）。<br>⚠ この内容で次の窓が28時間を超えます:<br>` +
+          msg.innerHTML = `✓ ${verb}しました（実労働 ${r.jitsuHHMM}）。${dup}<br>⚠ この内容で次の窓が28時間を超えます:<br>` +
             overWins.map(w => `・${w.startDate}〜${w.endDate}　合計 <b>${w.sumHHMM}</b>`).join('<br>');
+        } else if (r.warning) {
+          msg.className = 'save-msg warn';
+          msg.innerHTML = `✓ ${verb}しました（実労働 ${r.jitsuHHMM}）。${dup}`;
         } else {
           msg.className = 'save-msg ok';
           msg.textContent = `✓ ${verb}しました（実労働 ${r.jitsuHHMM}）。28時間超過の窓は発生していません。`;
@@ -664,7 +670,9 @@
         await loadLogList();
         loadDashboard(); // 保存/更新をダッシュボードへ即反映
       } catch (e) {
-        msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message;
+        // 検証エラーは複数行で返る（errs.join('\n')）ので改行を活かす
+        msg.className = 'save-msg over';
+        msg.innerHTML = 'エラー: ' + esc(e.message).replace(/\n/g, '<br>');
         btn.textContent = origText; // 失敗時はボタン文言を戻す（成功時はresetInputFormが戻す）
       } finally { btn.disabled = false; }
     }
