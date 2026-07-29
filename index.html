@@ -164,6 +164,12 @@
     .save-msg.saving { display: block; background: #dbeafe; color: #1e40af; }
     .save-msg.ok { display: block; background: var(--ok-bg); color: #065f46; }
     .save-msg.warn { display: block; background: var(--warn-bg); color: #92400e; }
+    .overnight-toggle {
+      display: flex; align-items: center; gap: 10px; margin: 14px 0 4px;
+      font-size: 16px; font-weight: 600; cursor: pointer; min-height: 44px;
+    }
+    .overnight-toggle input { width: 24px; height: 24px; min-height: auto; }
+    .ov-mark { color: var(--warn); font-weight: 700; font-size: 12px; }
     .save-msg.over { display: block; background: var(--over-bg); color: #991b1b; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px;
@@ -252,6 +258,15 @@
             <div class="timefield"><label>開始</label><div class="timebox" data-time="start"><span class="ph">--:--</span></div></div>
             <div class="timefield"><label>終了</label><div class="timebox" data-time="end"><span class="ph">--:--</span></div></div>
             <div class="timefield"><label>休憩</label><div class="timebox" data-time="brk"><span class="ph">--:--</span></div></div>
+          </div>
+
+          <label class="overnight-toggle">
+            <input type="checkbox" id="inOvernight">
+            <span>日をまたぐ（終了が翌日）</span>
+          </label>
+          <div class="hint" id="overnightHint">
+            例: 22:00 〜 翌 6:00 の夜勤。労働時間は0時で分けて、両方の日に計上します
+            （7日間の判定を境界に依らず正確にするため）。
           </div>
 
           <div class="jitsu-preview">実労働: <b id="jitsuPrev">0:00</b> <span class="hint">（開始・終了が空欄なら休み＝0:00）</span></div>
@@ -438,7 +453,13 @@
     // "h:mm" → 数字列
     function hhmmToDigits(s) { if (!s) return ''; const [h, m] = s.split(':'); return String(Number(h)) + String(m).padStart(2, '0'); }
     const toMin = (hhmm) => { if (!hhmm) return null; const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
-    function calcJitsu(s, e, b) { const S = toMin(s), E = toMin(e); if (S == null || E == null) return 0; return Math.max(0, E - S - (toMin(b) || 0)); }
+    // Core.gs の calcJitsuRodo_ と同じ式（プレビュー用。保存時の値はサーバが再計算する）
+    function calcJitsu(s, e, b, overnight) {
+      const S = toMin(s), E = toMin(e);
+      if (S == null || E == null) return 0;
+      const span = overnight ? (1440 - S + E) : (E - S);
+      return Math.max(0, span - (toMin(b) || 0));
+    }
     const fmtMin = (min) => { const sg = min < 0 ? '-' : ''; const v = Math.abs(min); return `${sg}${Math.floor(v/60)}:${pad2(v%60)}`; };
 
     // ====== タブ ======
@@ -617,7 +638,9 @@
         box.innerHTML = hhmm ? esc(hhmm) : '<span class="ph">--:--</span>';
         box.classList.toggle('active', activeTime === key);
       });
-      $('#jitsuPrev').textContent = fmtMin(calcJitsu(digitsToHHMM(timeDigits.start), digitsToHHMM(timeDigits.end), digitsToHHMM(timeDigits.brk)));
+      $('#jitsuPrev').textContent = fmtMin(calcJitsu(
+        digitsToHHMM(timeDigits.start), digitsToHHMM(timeDigits.end), digitsToHHMM(timeDigits.brk),
+        $('#inOvernight').checked));
     }
     $$('.timebox').forEach(box => box.addEventListener('click', () => {
       activeTime = box.dataset.time;
@@ -634,6 +657,7 @@
 
     function resetInputForm() {
       timeDigits.start = timeDigits.end = timeDigits.brk = ''; activeTime = null; editingLogId = null;
+      $('#inOvernight').checked = false;
       $('#saveBtn').textContent = '保存';
       $('#cancelEditBtn').style.display = 'none';
       $('#editNote').classList.remove('show');
@@ -655,8 +679,9 @@
       msg.innerHTML = `<span class="spinner"></span>${verb}しています…`;
       try {
         let r;
-        if (editingLogId) r = await apiPost({ action: 'updateLog', logId: editingLogId, staffId, date, start, end, brk });
-        else r = await apiPost({ action: 'addLog', staffId, date, start, end, brk });
+        const overnight = $('#inOvernight').checked;
+        if (editingLogId) r = await apiPost({ action: 'updateLog', logId: editingLogId, staffId, date, start, end, brk, overnight });
+        else r = await apiPost({ action: 'addLog', staffId, date, start, end, brk, overnight });
         // この日を含む窓が28hを超えないか（ブロックしない）
         const det = await apiGet('getStaffDetail', { staffId, from: addDaysApi(date, -6), to: date, today: date });
         const overWins = det.windows.filter(w => w.status === 'OVER' && w.startDate <= date && date <= w.endDate);
@@ -699,11 +724,13 @@
         $('#logList').innerHTML = `<table><thead><tr><th>日付</th><th>開始</th><th>終了</th><th>休憩</th><th class="num">実労働</th><th>入力者</th><th>操作</th></tr></thead><tbody>${
           logs.map(l => `<tr>
             <td>${l.date}${l.prevLogId ? ' <span class="hint" style="display:inline">修正済</span>' : ''}</td>
-            <td>${esc(l.start || '休')}</td><td>${esc(l.end || '')}</td><td>${esc(l.brk || '')}</td>
+            <td>${esc(l.start || '休')}</td>
+            <td>${l.overnight ? '<span class="ov-mark">翌</span> ' : ''}${esc(l.end || '')}</td>
+            <td>${esc(l.brk || '')}</td>
             <td class="num">${fmtMin(l.jitsuMin)}</td>
             <td>${esc(l.by || '—')}</td>
             <td><div class="row-actions">
-              <button class="btn ghost small" data-edit="${l.logId}" data-date="${l.date}" data-s="${esc(l.start)}" data-e="${esc(l.end)}" data-b="${esc(l.brk)}">編集</button>
+              <button class="btn ghost small" data-edit="${l.logId}" data-date="${l.date}" data-s="${esc(l.start)}" data-e="${esc(l.end)}" data-b="${esc(l.brk)}" data-ov="${l.overnight ? '1' : ''}">編集</button>
               <button class="btn danger small" data-del="${l.logId}" data-date="${l.date}">削除</button>
               ${l.prevLogId ? `<button class="btn ghost small" data-hist="${l.logId}" data-date="${l.date}">履歴</button>` : ''}
             </div></td></tr>`).join('')
@@ -719,7 +746,8 @@
         const h = await apiGet('getLogHistory', { logId });
         $('#histBody').innerHTML = `<table><thead><tr><th>#</th><th>日付</th><th>開始</th><th>終了</th><th>休憩</th><th class="num">実労働</th><th>入力者</th><th>登録日時</th><th>状態</th></tr></thead><tbody>${
           h.map((v, i) => `<tr class="${v.state === '有効' ? '' : 'voided'}">
-            <td>${i + 1}</td><td>${esc(v.date)}</td><td>${esc(v.start || '休')}</td><td>${esc(v.end)}</td><td>${esc(v.brk)}</td>
+            <td>${i + 1}</td><td>${esc(v.date)}</td><td>${esc(v.start || '休')}</td>
+            <td>${v.overnight ? '<span class="ov-mark">翌</span> ' : ''}${esc(v.end)}</td><td>${esc(v.brk)}</td>
             <td class="num">${esc(v.jitsuHHMM)}</td><td>${esc(v.by || '—')}</td><td>${esc(v.at || '—')}</td>
             <td>${v.state === '有効'
               ? '<b>現行</b>'
@@ -742,6 +770,7 @@
         timeDigits.start = hhmmToDigits(e.target.dataset.s);
         timeDigits.end = hhmmToDigits(e.target.dataset.e);
         timeDigits.brk = hhmmToDigits(e.target.dataset.b);
+        $('#inOvernight').checked = e.target.dataset.ov === '1';
         activeTime = null; renderTimeBoxes();
         $('#saveBtn').textContent = '更新';
         $('#cancelEditBtn').style.display = 'inline-block';
@@ -754,6 +783,7 @@
         catch (err) { alert('削除エラー: ' + err.message); }
       }
     });
+    $('#inOvernight').addEventListener('change', renderTimeBoxes); // 実労働プレビューを即時更新
     $('#inStaff').addEventListener('change', loadLogList);
     $('#inDate').addEventListener('change', loadLogList);
 
