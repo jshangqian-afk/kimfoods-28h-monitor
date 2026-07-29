@@ -226,6 +226,7 @@
       <button data-screen="member">メンバー</button>
       <button data-screen="vacation">長期休業</button>
       <button data-screen="users" id="navUsers" style="display:none">ユーザー</button>
+      <button data-screen="notify" id="navNotify" style="display:none">通知</button>
       <button data-screen="audit" id="navAudit" style="display:none">操作ログ</button>
     </nav>
     <div class="who"><b id="whoName">—</b><button id="logoutBtn">ログアウト</button></div>
@@ -362,6 +363,34 @@
       <div id="uList"><div class="loading">読み込み中…</div></div>
     </section>
 
+    <!-- ============ 画面8: 通知（管理者のみ） ============ -->
+    <section id="notify" class="screen">
+      <h3>日次通知</h3>
+      <div class="hint">
+        毎朝、<b>超過・上限接近・打刻の未入力</b>のいずれかがある場合にメールでお知らせします。<br>
+        異常が無い日は送信しません（毎日届くと読み飛ばされ、肝心の通知が埋もれるため）。
+      </div>
+      <div class="toolbar" style="margin-top:16px">
+        <div class="field" style="flex:1;min-width:280px">
+          <label>宛先メール（カンマ区切りで複数可）</label>
+          <input type="text" id="nMailTo" placeholder="office@example.com, manager@example.com">
+        </div>
+        <div class="field">
+          <label>未入力とみなす日数</label>
+          <input type="number" id="nMissingDays" min="1" max="30" style="width:110px">
+        </div>
+      </div>
+      <label class="overnight-toggle">
+        <input type="checkbox" id="nEnabled">
+        <span>日次通知を有効にする</span>
+      </label>
+      <div class="toolbar" style="margin-top:14px">
+        <button class="btn" id="nSave">保存</button>
+        <button class="btn ghost" id="nTest">テスト送信</button>
+      </div>
+      <div class="save-msg" id="nMsg"></div>
+    </section>
+
     <!-- ============ 画面7: 操作ログ（管理者のみ） ============ -->
     <section id="audit" class="screen">
       <div class="toolbar">
@@ -474,6 +503,7 @@
       if (btn.dataset.screen === 'vacation') loadVacations();
       if (btn.dataset.screen === 'users') loadUsers();
       if (btn.dataset.screen === 'audit') loadAudit();
+      if (btn.dataset.screen === 'notify') loadNotify();
     }));
 
     // ====== スタッフ一覧（共有・打刻/詳細の選択肢） ======
@@ -968,6 +998,51 @@
       } catch (err) { alert('エラー: ' + err.message); }
     });
 
+    // ====== 画面8: 通知（管理者のみ） ======
+    async function loadNotify() {
+      const msg = $('#nMsg');
+      msg.className = 'save-msg';
+      try {
+        const s = await apiGet('getNotifySettings');
+        $('#nMailTo').value = s.mailTo || '';
+        $('#nMissingDays').value = s.missingDays;
+        $('#nEnabled').checked = !!s.enabled;
+      } catch (e) {
+        msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message;
+      }
+    }
+    $('#nSave').addEventListener('click', async () => {
+      const msg = $('#nMsg');
+      msg.className = 'save-msg saving'; msg.textContent = '保存しています…';
+      try {
+        // 宛先を先に保存する（未設定のまま有効化するとサーバ側で弾かれるため）
+        await apiPost({ action: 'updateNotifySettings', mailTo: $('#nMailTo').value, missingDays: $('#nMissingDays').value });
+        const s = await apiPost({ action: 'updateNotifySettings', enabled: $('#nEnabled').checked });
+        msg.className = 'save-msg ok';
+        msg.textContent = s.enabled
+          ? `保存しました。毎朝 ${s.mailTo} に、異常がある日だけ通知します。`
+          : '保存しました。日次通知は無効です。';
+        await loadNotify();
+      } catch (e) {
+        msg.className = 'save-msg over';
+        msg.innerHTML = 'エラー: ' + esc(e.message).replace(/\n/g, '<br>');
+        await loadNotify();
+      }
+    });
+    $('#nTest').addEventListener('click', async () => {
+      const msg = $('#nMsg');
+      if (!$('#nMailTo').value.trim()) { msg.className = 'save-msg over'; msg.textContent = '宛先メールを入力してください'; return; }
+      msg.className = 'save-msg saving'; msg.textContent = '送信しています…';
+      try {
+        await apiPost({ action: 'updateNotifySettings', mailTo: $('#nMailTo').value });
+        const r = await apiPost({ action: 'sendTestNotification' });
+        msg.className = 'save-msg ok'; msg.textContent = `テスト送信しました: ${r.to.join(', ')}`;
+      } catch (e) {
+        msg.className = 'save-msg over';
+        msg.innerHTML = 'エラー: ' + esc(e.message).replace(/\n/g, '<br>');
+      }
+    });
+
     // ====== 画面7: 操作ログ（管理者のみ） ======
     async function loadAudit() {
       $('#aList').innerHTML = '<div class="loading">読み込み中…</div>';
@@ -1042,6 +1117,7 @@
         : '—';
       $('#navUsers').style.display = isAdmin() ? '' : 'none';
       $('#navAudit').style.display = isAdmin() ? '' : 'none';
+      $('#navNotify').style.display = isAdmin() ? '' : 'none';
       try { await loadStaff(); } catch (e) { if (e instanceof AuthError) return; console.error(e); }
       try { await loadLogList(); await loadDashboard(); } catch (e) { console.error(e); }
     }
