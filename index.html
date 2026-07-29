@@ -193,6 +193,7 @@
     <div class="login-card">
       <h2>28時間管理</h2>
       <div class="sub">ユーザーIDとアクセスキーを入力してください。</div>
+      <div class="hint" id="loginTenant" style="margin:-14px 0 16px"></div>
       <div class="login-err" id="loginErr"></div>
       <div class="field">
         <label>ユーザーID</label>
@@ -373,6 +374,12 @@
   <script>
     // ====== 設定 ======
     const API_URL = 'https://script.google.com/macros/s/AKfycbxF0eVxWRR2c70qWYMmng_DjvkCNZgqGB9P-wPH7YygtCjJMgyNYgti0mymwvWOq94/exec';
+
+    // ====== テナント ======
+    // 顧客ごとに ?t=<テナントID> 付きのURLを配る。
+    // ログイン時にだけサーバへ渡し、以降はトークンが持つテナントで解決される
+    // （ログイン後にURLを書き換えても他社のデータには届かない）。
+    const TENANT_ID = new URLSearchParams(location.search).get('t') || '';
 
     // ====== セッション ======
     // トークンは端末の localStorage に保存する（有効期間30日）。
@@ -973,7 +980,7 @@
         // login だけはトークン無しで直接叩く（apiPost は失効時に再帰的にここへ戻るため）
         const res = await fetch(API_URL, {
           method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ action: 'login', userId, accessKey })
+          body: JSON.stringify({ action: 'login', tenantId: TENANT_ID, userId, accessKey })
         });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error || 'ログインできませんでした');
@@ -999,7 +1006,10 @@
     // ログイン済みならデータを読む。トークンが失効していれば apiGet 側が
     // authRequired を検知して自動でログイン画面へ戻す。
     async function boot() {
-      $('#whoName').textContent = SESSION ? SESSION.name : '—';
+      // 複数社を扱うため、どの会社にログインしているかを常に見える場所に出す
+      $('#whoName').textContent = SESSION
+        ? (SESSION.tenantName ? SESSION.tenantName + ' / ' + SESSION.name : SESSION.name)
+        : '—';
       $('#navUsers').style.display = isAdmin() ? '' : 'none';
       $('#navAudit').style.display = isAdmin() ? '' : 'none';
       try { await loadStaff(); } catch (e) { if (e instanceof AuthError) return; console.error(e); }
@@ -1013,7 +1023,15 @@
       $('#detTo').value = '2026-06-15';
       $('#dashRefresh').addEventListener('click', loadDashboard);
       renderTimeBoxes();
-      if (loadSession()) { hideLogin(); await boot(); }
+      // URLのテナントを表示（サーバに問い合わせないので顧客名は漏れない）
+      $('#loginTenant').textContent = TENANT_ID ? `接続先: ${TENANT_ID}` : '';
+
+      loadSession();
+      // 別テナントのURLを開いたら、前のセッションは破棄してログインし直す
+      if (SESSION && TENANT_ID && SESSION.tenantId && SESSION.tenantId !== TENANT_ID) {
+        clearSession();
+      }
+      if (SESSION) { hideLogin(); await boot(); }
       else { showLogin(); }
     })();
   </script>
