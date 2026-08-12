@@ -449,20 +449,64 @@
       if (json.authRequired) { clearSession(); showLogin('セッションの有効期限が切れました。もう一度ログインしてください。'); }
       throw err;
     }
+    // GASのWeb Appは /exec → script.googleusercontent.com へのリダイレクト経由で結果を返す。
+    // この2段目がGoogle側の都合で断続的に404のHTMLを返すことがある（スクリプト自体は成功していて、
+    // 実行ログにも「完了」と出る）。JSONでない応答はこの通信障害とみなし、読み取りは自動で読み直す。
+    class GatewayError extends Error {
+      constructor() { super('Googleとの通信が不安定です。しばらく待ってから、もう一度お試しください。'); }
+    }
+    const RETRY_MAX = 3;        // 初回を含む試行回数
+    const RETRY_WAIT_MS = 1500; // 2回目以降の待ち時間（回を追うごとに伸ばす）
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // 応答をJSONとして読む。HTMLが返ってきた＝上記の通信障害。
+    async function readJson_(res) {
+      const text = await res.text();
+      try { return JSON.parse(text); }
+      catch (e) { throw new GatewayError(); }
+    }
+
+    // 通信障害のときだけ再試行する。業務エラー・認証エラーはそのまま投げる。
+    async function withRetry_(label, doFetch) {
+      let last;
+      for (let i = 0; i < RETRY_MAX; i++) {
+        if (i > 0) await sleep(RETRY_WAIT_MS * i);
+        try { return await doFetch(); }
+        catch (e) {
+          // fetch自体の失敗（オフライン等）も、待てば直る種類なので同じ扱いにする
+          if (!(e instanceof GatewayError) && !(e instanceof TypeError)) throw e;
+          last = (e instanceof TypeError) ? new GatewayError() : e;
+          console.warn(`通信を再試行します (${i + 1}/${RETRY_MAX}): ${label}`);
+        }
+      }
+      throw last;
+    }
+
     async function apiGet(action, params = {}) {
       const q = new URLSearchParams(Object.assign({ action, token: token() }, params)).toString();
-      const res = await fetch(API_URL + '?' + q);
-      const json = await res.json();
-      if (!json.ok) handleFail(json);
-      return json.data;
+      return withRetry_(action, async () => {
+        const res = await fetch(API_URL + '?' + q);
+        const json = await readJson_(res);
+        if (!json.ok) handleFail(json);
+        return json.data;
+      });
     }
+    // 書き込みは自動で再試行しない。同じ打刻が二重に登録されるほうが害が大きいため、
+    // 失敗したことをはっきり伝えて、実行するかどうかは人が決める。
     async function apiPost(body) {
       const payload = Object.assign({ token: token() }, body);
-      const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) });
-      const json = await res.json();
+      let res;
+      try { res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) }); }
+      catch (e) { throw new Error(SAVE_UNKNOWN_MSG); }
+      let json;
+      try { json = await readJson_(res); }
+      catch (e) { throw new Error(SAVE_UNKNOWN_MSG); }
       if (!json.ok) handleFail(json);
       return json.data;
     }
+    // 保存は「届いたが応答が返らなかった」可能性があるので、やり直す前に一覧の確認を促す。
+    const SAVE_UNKNOWN_MSG = 'Googleとの通信が不安定で、保存できたかどうか確認できませんでした。'
+      + '画面を再読み込みして一覧を確かめてから、入っていなければもう一度保存してください。';
 
     // ====== 汎用 ======
     const $ = (s) => document.querySelector(s);
@@ -1082,12 +1126,15 @@
       if (!userId || !accessKey) { showLogin('ユーザーIDとアクセスキーを入力してください'); return; }
       btn.disabled = true; btn.textContent = 'ログイン中…';
       try {
-        // login だけはトークン無しで直接叩く（apiPost は失効時に再帰的にここへ戻るため）
-        const res = await fetch(API_URL, {
-          method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({ action: 'login', tenantId: TENANT_ID, userId, accessKey })
+        // login だけはトークン無しで直接叩く（apiPost は失効時に再帰的にここへ戻るため）。
+        // データを書き換えないので、通信障害のときは読み取りと同じく自動で再試行してよい。
+        const json = await withRetry_('login', async () => {
+          const res = await fetch(API_URL, {
+            method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({ action: 'login', tenantId: TENANT_ID, userId, accessKey })
+          });
+          return readJson_(res);
         });
-        const json = await res.json();
         if (!json.ok) throw new Error(json.error || 'ログインできませんでした');
         saveSession(json.data);
         hideLogin();
