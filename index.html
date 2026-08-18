@@ -139,6 +139,17 @@
     .sim-frame { font-weight: 700; white-space: nowrap; }
     .sim-frame .ng { color: var(--over); }
 
+    /* --- 長期休業の対象メンバー選択 --- */
+    .chk-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px solid var(--line);
+      border-radius: 8px; background: #fff; max-width: 720px; }
+    .chk-list label { display: flex; align-items: center; gap: 6px; font-size: 16px; font-weight: 600;
+      padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; min-height: 40px; }
+    .chk-list label.on { border-color: var(--primary); background: rgba(37,99,235,.08); color: var(--primary); }
+    .chk-list input { width: 18px; height: 18px; }
+    .chk-list .empty { color: var(--muted); font-size: 14px; }
+    .vtargets { font-size: 14px; }
+    .vtargets .all { color: var(--over); font-weight: 700; }
+
     /* --- 入力 --- */
     .input-grid { display: grid; grid-template-columns: 1fr 340px; gap: 24px; align-items: start; }
     @media (max-width: 820px) { .input-grid { grid-template-columns: 1fr; } }
@@ -330,14 +341,23 @@
     <section id="vacation" class="screen">
       <h3>長期休業期間の登録</h3>
       <div class="toolbar">
-        <div class="field"><label>名称</label><input type="text" id="vName" placeholder="例: 夏休み" style="width:160px"></div>
+        <div class="field"><label>名称</label><input type="text" id="vName" placeholder="例: A校 夏休み" style="width:180px"></div>
         <div class="field"><label>開始日</label><input type="date" id="vFrom"></div>
         <div class="field"><label>終了日</label><input type="date" id="vTo"></div>
-        <button class="btn" id="vAdd">追加</button>
       </div>
+      <div class="field" style="margin-bottom:12px">
+        <label>対象メンバー（この期間が休業になる人だけを選ぶ）</label>
+        <div id="vTargets" class="chk-list"></div>
+        <div style="display:flex; gap:8px; margin-top:8px">
+          <button class="btn ghost small" id="vAll">全員を選ぶ</button>
+          <button class="btn ghost small" id="vNone">選択を解除</button>
+        </div>
+      </div>
+      <div class="toolbar"><button class="btn" id="vAdd">追加</button></div>
       <div class="save-msg" id="vMsg"></div>
       <div class="hint">
-        登録した期間中は、上限が<b>自動で週40時間</b>になります（終われば自動で28時間に戻る）。<br>
+        選んだメンバーだけ、この期間中は上限が<b>自動で週40時間</b>になります（終われば自動で28時間に戻る）。<br>
+        <b>学校によって休業期間は違います。</b>該当しない人を含めると、その人の超過を見落とすので必ず対象を絞ってください。<br>
         判定は安全側：<b>7日間すべてが休業期間に入っている窓だけ40時間</b>。休業の開始・終了をまたぐ窓は通常の28時間で判定します。
       </div>
       <h3>登録済みの期間</h3>
@@ -954,35 +974,100 @@
     });
 
     // ====== 画面5: 長期休業 ======
+    // 休業は学校ごとに時期が違うため、期間には必ず対象メンバーが付く。
+    // 対象チェックボックスは監視対象スタッフ（STAFF）から作る。
+    function renderVacTargets(containerId, checkedIds) {
+      const box = document.getElementById(containerId);
+      const on = new Set((checkedIds || []).map(String));
+      if (!STAFF.length) { box.innerHTML = '<div class="empty">監視対象のメンバーがいません。「メンバー」から追加してください。</div>'; return; }
+      box.innerHTML = STAFF.map(s => `<label class="${on.has(String(s.staffId)) ? 'on' : ''}">
+        <input type="checkbox" value="${esc(s.staffId)}" ${on.has(String(s.staffId)) ? 'checked' : ''}>${esc(s.name)}</label>`).join('');
+    }
+    function vacTargetIds(containerId) {
+      return Array.from(document.querySelectorAll(`#${containerId} input:checked`)).map(i => i.value);
+    }
+    // チェック状態を見た目（枠の色）に反映
+    document.addEventListener('change', (e) => {
+      if (e.target.matches('.chk-list input')) e.target.closest('label').classList.toggle('on', e.target.checked);
+    });
+
+    let VACS = []; // 一覧の並び順。行の data-* はこの配列の添字を指す
     async function loadVacations() {
       $('#vList').innerHTML = '<div class="loading">読み込み中…</div>';
+      if (!STAFF.length) await loadStaff(); // 対象チェックボックスの元データ
+      renderVacTargets('vTargets', []);
       try {
         const list = await apiGet('getVacations');
         if (!list.length) { $('#vList').innerHTML = '<div class="loading">登録された長期休業期間はありません。</div>'; return; }
-        $('#vList').innerHTML = `<table><thead><tr><th>名称</th><th>開始日</th><th>終了日</th><th>操作</th></tr></thead><tbody>${
-          list.map(v => `<tr>
+        $('#vList').innerHTML = `<table><thead><tr><th>名称</th><th>開始日</th><th>終了日</th><th>対象メンバー</th><th>操作</th></tr></thead><tbody>${
+          list.map((v, i) => {
+            // 対象が空＝全員に効く。旧データなので目立たせて設定を促す
+            const tgt = v.all
+              ? '<span class="all">全員（対象未設定）</span>'
+              : esc(v.staffNames.join('、'));
+            return `<tr>
             <td>${esc(v.name || '（無名）')}</td><td>${v.from}</td><td>${v.to}</td>
-            <td><button class="btn danger small" data-vfrom="${v.from}" data-vto="${v.to}">削除</button></td>
-          </tr>`).join('')
+            <td class="vtargets">${tgt}</td>
+            <td>
+              <button class="btn ghost small" data-vedit="${i}">対象を変更</button>
+              <button class="btn danger small" data-vdel="${i}">削除</button>
+            </td>
+          </tr>
+          <tr id="vedit-${i}" style="display:none"><td colspan="5">
+            <div class="chk-list" id="vTargets-${i}"></div>
+            <div style="display:flex; gap:8px; margin-top:8px">
+              <button class="btn small" data-vsave="${i}">この対象で保存</button>
+              <button class="btn ghost small" data-vcancel="${i}">やめる</button>
+            </div>
+          </td></tr>`;
+          }).join('')
         }</tbody></table>`;
+        VACS = list;
       } catch (e) { $('#vList').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
     }
+    $('#vAll').addEventListener('click', () => renderVacTargets('vTargets', STAFF.map(s => s.staffId)));
+    $('#vNone').addEventListener('click', () => renderVacTargets('vTargets', []));
     $('#vAdd').addEventListener('click', async () => {
       const msg = $('#vMsg');
       const from = dateInputToApi($('#vFrom').value), to = dateInputToApi($('#vTo').value);
       if (!from || !to) { msg.className = 'save-msg over'; msg.textContent = '開始日と終了日を入力してください'; return; }
+      const staffIds = vacTargetIds('vTargets');
+      if (!staffIds.length) { msg.className = 'save-msg over'; msg.textContent = '対象メンバーを1人以上選んでください'; return; }
       try {
-        await apiPost({ action: 'addVacation', name: $('#vName').value.trim(), from, to });
-        msg.className = 'save-msg ok'; msg.textContent = `追加しました: ${from} 〜 ${to}`;
+        await apiPost({ action: 'addVacation', name: $('#vName').value.trim(), from, to, staffIds });
+        msg.className = 'save-msg ok'; msg.textContent = `追加しました: ${from} 〜 ${to}（対象 ${staffIds.length}人）`;
         $('#vName').value = '';
         await loadVacations();
       } catch (e) { msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + e.message; }
     });
     $('#vList').addEventListener('click', async (e) => {
-      const from = e.target.dataset.vfrom, to = e.target.dataset.vto;
-      if (from && confirm(`長期休業期間 ${from}〜${to} を削除しますか？`)) {
-        try { await apiPost({ action: 'deleteVacation', from, to }); await loadVacations(); }
-        catch (err) { alert('削除エラー: ' + err.message); }
+      const d = e.target.dataset;
+      if (d.vedit !== undefined) {
+        const v = VACS[Number(d.vedit)];
+        renderVacTargets('vTargets-' + d.vedit, v.staffIds);
+        document.getElementById('vedit-' + d.vedit).style.display = '';
+        return;
+      }
+      if (d.vcancel !== undefined) {
+        document.getElementById('vedit-' + d.vcancel).style.display = 'none';
+        return;
+      }
+      if (d.vsave !== undefined) {
+        const v = VACS[Number(d.vsave)];
+        const staffIds = vacTargetIds('vTargets-' + d.vsave);
+        if (!staffIds.length) { alert('対象メンバーを1人以上選んでください'); return; }
+        try {
+          await apiPost({ action: 'updateVacation', name: v.name, from: v.from, to: v.to, staffIds });
+          await loadVacations();
+        } catch (err) { alert('保存エラー: ' + err.message); }
+        return;
+      }
+      if (d.vdel !== undefined) {
+        const v = VACS[Number(d.vdel)];
+        if (confirm(`長期休業期間 ${v.from}〜${v.to}（${v.name || '無名'}）を削除しますか？`)) {
+          try { await apiPost({ action: 'deleteVacation', name: v.name, from: v.from, to: v.to }); await loadVacations(); }
+          catch (err) { alert('削除エラー: ' + err.message); }
+        }
       }
     });
 
