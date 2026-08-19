@@ -66,6 +66,12 @@
     }
     #app { display: none; }
     #app.ready { display: block; }
+    /* JSが動かないと #app もログイン画面も非表示のままで画面が真っ白になる。
+       この枠だけ最初から見えていて、init() が最後まで通ったときに消える。
+       .late は純CSSなので、スクリプトが1行も動かない端末でも8秒後に出る。 */
+    #bootFail { padding: 48px 20px; text-align: center; color: var(--muted); font-size: 14px; }
+    #bootFail .late { opacity: 0; animation: bootLate .4s linear 8s forwards; }
+    @keyframes bootLate { to { opacity: 1; } }
     .login-wrap {
       position: fixed; inset: 0; background: var(--bg); z-index: 100;
       display: none; align-items: center; justify-content: center; padding: 20px;
@@ -205,6 +211,16 @@
   </style>
 </head>
 <body>
+  <!-- 起動できなかったときの受け皿。正常なら init() が消す。 -->
+  <div id="bootFail">
+    <div>読み込んでいます…</div>
+    <div class="late" style="margin-top:14px;line-height:1.8">
+      この表示のまま変わらないときは、iPad（ブラウザ）が古い可能性があります。<br>
+      「設定 → 一般 → 情報 → システムバージョン」を確認のうえ、<br>
+      ページを再読み込みしてください。
+    </div>
+  </div>
+
   <!-- ============ ログイン ============ -->
   <div class="login-wrap" id="loginWrap">
     <div class="login-card">
@@ -479,6 +495,27 @@
     const RETRY_WAIT_MS = 1500; // 2回目以降の待ち時間（回を追うごとに伸ばす）
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+    // GASの /exec は Google 側の都合で 1〜30秒 とばらつく（何もしない ping でも同じ）。
+    // 待ち時間に上限が無いと「読み込み中…」のまま永久に止まって見えるので、25秒で打ち切る。
+    // 打ち切りは再試行しない（待てば直る種類ではなく、待ち時間が積み上がるだけのため）。
+    const FETCH_TIMEOUT_MS = 25000;
+    class TimeoutError extends Error {
+      constructor() { super('Googleの応答が25秒以内に返りませんでした。画面を再読み込みしてください。'); }
+    }
+    async function fetchLimited_(url, opts) {
+      if (typeof AbortController === 'undefined') return fetch(url, opts); // 古い端末は従来どおり
+      const ac = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; ac.abort(); }, FETCH_TIMEOUT_MS);
+      try {
+        return await fetch(url, Object.assign({}, opts || {}, { signal: ac.signal }));
+      } catch (e) {
+        throw timedOut ? new TimeoutError() : e;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     // 応答をJSONとして読む。HTMLが返ってきた＝上記の通信障害。
     async function readJson_(res) {
       const text = await res.text();
@@ -493,6 +530,8 @@
         if (i > 0) await sleep(RETRY_WAIT_MS * i);
         try { return await doFetch(); }
         catch (e) {
+          // 打ち切りは再試行しない（3回やると最悪75秒待たせることになる）
+          if (e instanceof TimeoutError) throw e;
           // fetch自体の失敗（オフライン等）も、待てば直る種類なので同じ扱いにする
           if (!(e instanceof GatewayError) && !(e instanceof TypeError)) throw e;
           last = (e instanceof TypeError) ? new GatewayError() : e;
@@ -505,7 +544,7 @@
     async function apiGet(action, params = {}) {
       const q = new URLSearchParams(Object.assign({ action, token: token() }, params)).toString();
       return withRetry_(action, async () => {
-        const res = await fetch(API_URL + '?' + q);
+        const res = await fetchLimited_(API_URL + '?' + q);
         const json = await readJson_(res);
         if (!json.ok) handleFail(json);
         return json.data;
@@ -516,7 +555,7 @@
     async function apiPost(body) {
       const payload = Object.assign({ token: token() }, body);
       let res;
-      try { res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) }); }
+      try { res = await fetchLimited_(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) }); }
       catch (e) { throw new Error(SAVE_UNKNOWN_MSG); }
       let json;
       try { json = await readJson_(res); }
@@ -532,8 +571,10 @@
     const $ = (s) => document.querySelector(s);
     const $$ = (s) => Array.from(document.querySelectorAll(s));
     const pad2 = (n) => String(n).padStart(2, '0');
-    const dateInputToApi = (v) => v ? v.replaceAll('-', '/') : '';
-    const apiToDateInput = (v) => v ? v.replaceAll('/', '-') : '';
+    // replaceAll は iOS 13.4 未満の Safari に無い。ここは起動直後に必ず通るので、
+    // 古いiPadで例外＝白紙にならないよう split/join で書く。
+    const dateInputToApi = (v) => v ? v.split('-').join('/') : '';
+    const apiToDateInput = (v) => v ? v.split('/').join('-') : '';
     const todayApi = () => { const d = new Date(); return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())}`; };
     const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;' }[c]));
     function addDaysApi(apiDate, n) {
@@ -572,6 +613,9 @@
 
     // ====== スタッフ一覧（共有・打刻/詳細の選択肢） ======
     let STAFF = [];
+    // 起動を並列にしたので、スタッフ選択肢がまだ空のまま「打刻入力」を開かれることがある。
+    // 記録一覧はこの完了を待ってから読む。
+    let STAFF_READY = Promise.resolve();
     async function loadStaff() {
       STAFF = await apiGet('getStaff');
       const opts = STAFF.map(s => `<option value="${esc(s.staffId)}">${esc(s.name)}（${esc(s.staffId)}）</option>`).join('');
@@ -806,6 +850,7 @@
 
     // 記録一覧（選択スタッフの直近30日）
     async function loadLogList() {
+      await STAFF_READY.catch(() => {});   // 選択肢が入る前に開かれても空表示にならないように
       const staffId = $('#inStaff').value;
       $('#logListTitle').textContent = staffId ? `${staffName(staffId)}さんの記録（直近30日）` : '記録一覧';
       if (!staffId) { $('#logList').innerHTML = '<div class="loading">スタッフを選ぶと記録が表示されます。</div>'; return; }
@@ -1214,7 +1259,7 @@
         // login だけはトークン無しで直接叩く（apiPost は失効時に再帰的にここへ戻るため）。
         // データを書き換えないので、通信障害のときは読み取りと同じく自動で再試行してよい。
         const json = await withRetry_('login', async () => {
-          const res = await fetch(API_URL, {
+          const res = await fetchLimited_(API_URL, {
             method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
             body: JSON.stringify({ action: 'login', tenantId: TENANT_ID, userId, accessKey })
           });
@@ -1250,11 +1295,19 @@
       $('#navUsers').style.display = isAdmin() ? '' : 'none';
       $('#navAudit').style.display = isAdmin() ? '' : 'none';
       $('#navNotify').style.display = isAdmin() ? '' : 'none';
-      try { await loadStaff(); } catch (e) { if (e instanceof AuthError) return; console.error(e); }
-      try { await loadLogList(); await loadDashboard(); } catch (e) { console.error(e); }
+      // GASは1本あたり1〜30秒かかる（Google側の都合）。直列で3本叩くと足し算で待たされるので、
+      // 起動時は「メンバー」と「ダッシュボード」だけを同時に投げる（待ち時間＝遅いほう1本分）。
+      // 記録一覧(getLogs)は「打刻入力」タブを開いたときに読む。起動時には見えていない画面なので、
+      // ここに置くと最初の表示を1本分まるごと遅らせるだけになる。
+      STAFF_READY = loadStaff();
+      await Promise.all([
+        STAFF_READY.catch((e) => { if (!(e instanceof AuthError)) console.error(e); }),
+        loadDashboard().catch((e) => { console.error(e); }),
+      ]);
     }
 
     (async function init() {
+     try {
       $('#dashToday').value = apiToDateInput(todayApi());
       $('#inDate').value = apiToDateInput(todayApi());
       $('#detFrom').value = '2026-05-16';
@@ -1269,8 +1322,18 @@
       if (SESSION && TENANT_ID && SESSION.tenantId && SESSION.tenantId !== TENANT_ID) {
         clearSession();
       }
+      $('#bootFail').style.display = 'none';   // ここまで来たら画面は出せる
       if (SESSION) { hideLogin(); await boot(); }
       else { showLogin(); }
+     } catch (e) {
+      // 古い端末で未対応の書き方に当たった場合など。真っ白のまま放置せず理由を出す。
+      console.error(e);
+      const box = $('#bootFail');
+      box.style.display = '';
+      box.innerHTML = '<div>画面を開けませんでした。</div>'
+        + '<div style="margin-top:14px;line-height:1.8">お使いのiPad（ブラウザ）が古い可能性があります。'
+        + '<br>' + esc(e && e.message ? e.message : String(e)) + '</div>';
+     }
     })();
   </script>
 </body>
