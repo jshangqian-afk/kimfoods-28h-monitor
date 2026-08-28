@@ -37,6 +37,7 @@
       font-weight: 700; font-size: 18px; margin-bottom: 14px; display: none;
     }
     .banner-over.show { display: block; }
+    .banner-over.banner-warn { background: #b45309; font-size: 17px; line-height: 1.5; }
 
     .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
     .field { display: flex; flex-direction: column; gap: 4px; }
@@ -263,6 +264,7 @@
     <!-- ============ 画面1: ダッシュボード ============ -->
     <section id="dash" class="screen active">
       <div class="banner-over" id="dashBanner"></div>
+      <div class="banner-over banner-warn" id="dashBanner40"></div>
       <div class="toolbar">
         <div class="field"><label>基準日</label><input type="date" id="dashToday"></div>
         <button class="btn" id="dashRefresh">更新</button>
@@ -347,8 +349,8 @@
         <button class="btn" id="mAdd">追加</button>
       </div>
       <div class="save-msg" id="mMsg"></div>
-      <div class="hint">上限28時間＝通常。長期休業中の週40時間例外を使う人は上限40に。監視対象は在留資格「留学」のみ。</div>
-      <div class="hint">「上限」は通常時の基準です。長期休業中の自動40時間は「長期休業」タブで期間を登録してください（40時間 常時 は、休業に関係なく常に40時間の特例者用）。</div>
+      <div class="hint">監視対象は在留資格「留学」のみ。<b>「留学」の上限は28時間で固定</b>です（40時間は登録できません）。</div>
+      <div class="hint">長期休業中の週40時間は「<b>長期休業</b>」タブで期間を登録してください。期間中だけ自動で40時間になり、<b>期間が終われば自動で28時間に戻ります</b>。ここの上限を40にすると日付と関係なくずっと40時間になり、休業明けの超過を見落とします。</div>
       <h3>メンバー一覧</h3>
       <div id="mList"><div class="loading">読み込み中…</div></div>
     </section>
@@ -374,7 +376,8 @@
       <div class="hint">
         選んだメンバーだけ、この期間中は上限が<b>自動で週40時間</b>になります（終われば自動で28時間に戻る）。<br>
         <b>学校によって休業期間は違います。</b>該当しない人を含めると、その人の超過を見落とすので必ず対象を絞ってください。<br>
-        判定は安全側：<b>7日間すべてが休業期間に入っている窓だけ40時間</b>。休業の開始・終了をまたぐ窓は通常の28時間で判定します。
+        判定は安全側：<b>7日間すべてが休業期間に入っている窓だけ40時間</b>。休業の開始・終了をまたぐ窓は通常の28時間で判定します。<br>
+        <b>メンバー画面の「上限」は変えないでください。</b>休業の40時間はここの期間登録だけで自動的に切り替わります（期間が終われば自動で28時間）。
       </div>
       <h3>登録済みの期間</h3>
       <div id="vList"><div class="loading">読み込み中…</div></div>
@@ -645,6 +648,15 @@
         DASH_TODAY = d.today;
         $('#dashBanner').classList.toggle('show', d.anyOver);
         $('#dashBanner').textContent = d.anyOver ? '⚠ 28時間超過のスタッフがいます' : '';
+        // 「常時40時間」の設定が残っている人がいると、休業が終わっても40時間で判定され続ける。
+        // 期間登録（長期休業タブ）は日付で自動に戻るが、この個別設定だけは自分では戻らないので警告する。
+        const stuck40 = d.cards.filter(c => c.upperMin > 1680);
+        const b40 = $('#dashBanner40');
+        b40.classList.toggle('show', stuck40.length > 0);
+        b40.innerHTML = stuck40.length
+          ? `⚠ 上限が「常時40時間」のままの人がいます: ${stuck40.map(c => esc(c.name)).join('、')}<br>
+             <span style="font-weight:500;font-size:14px">長期休業が終わっても28時間に戻りません。「メンバー」タブの「28時間に戻す」で戻してください。</span>`
+          : '';
         if (!d.cards.length) { $('#dashCards').innerHTML = '<div class="loading">監視対象（在留資格「留学」の在籍者）がいません。「メンバー」から追加してください。</div>'; return; }
         $('#dashCards').innerHTML = d.cards.map(c => {
           const allowClass = c.tomorrowAllowanceMin <= 0 ? 'over' : (c.tomorrowAllowanceMin < 240 ? 'warn' : '');
@@ -960,7 +972,7 @@
         $('#mList').innerHTML = `<table><thead><tr><th>番号</th><th>氏名</th><th>在留資格</th><th>上限（週）</th><th>状態</th><th>操作</th></tr></thead><tbody>${
           list.map(s => `<tr>
             <td>${esc(s.staffId)}</td><td>${esc(s.name)}</td><td>${esc(s.shikaku)}</td>
-            <td>${upperSelect(s)}</td>
+            <td>${upperCell(s)}</td>
             <td>${s.active ? '<span class="tag OK">在籍</span>' : '<span class="tag off">退職</span>'}</td>
             <td>${s.active
               ? `<button class="btn ghost small" data-retire="${esc(s.staffId)}">退職</button>`
@@ -969,16 +981,29 @@
         }</tbody></table>`;
       } catch (e) { $('#mList').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
     }
-    // 上限の切替（28時間 通常 ⇄ 40時間 長期休業例外）。警告は上限の2時間下に自動設定。
-    function upperSelect(s) {
+    // 上限の表示。**在留資格「留学」は28時間固定で、40時間を選ぶ手段を置かない。**
+    // 休業中の40時間は「長期休業」タブの期間登録（日付で自動・期間が終われば自動で戻る）が唯一の経路。
+    // ここで40時間を選べると恒久設定になり、休業明けに28時間へ戻らず超過を見落とす（2026-08に発生）。
+    // 過去に40時間にされた人だけ、警告と「28時間に戻す」ボタンを出して回収する。
+    function upperCell(s) {
+      const isRyugaku = String(s.shikaku).trim() === '留学';
+      if (isRyugaku) {
+        if (s.upperMin > 1680) {
+          return `<span class="tag OVER">常時${fmtUpper(s.upperMin)}</span>
+            <button class="btn ghost small" data-reset28="${esc(s.staffId)}">28時間に戻す</button>`;
+        }
+        return `${fmtUpper(s.upperMin)}`;
+      }
+      // 「留学」以外（特例者）は従来どおり選べる
       const isStd = s.upperMin === 1680, isExc = s.upperMin === 2400;
-      const custom = (!isStd && !isExc) ? `<option value="${s.upperMin}" selected>${(s.upperMin/60).toFixed(s.upperMin%60?1:0)}時間</option>` : '';
+      const custom = (!isStd && !isExc) ? `<option value="${s.upperMin}" selected>${fmtUpper(s.upperMin)}</option>` : '';
       return `<select class="upper-sel" data-staff="${esc(s.staffId)}">
         ${custom}
         <option value="1680" ${isStd ? 'selected' : ''}>28時間（標準）</option>
         <option value="2400" ${isExc ? 'selected' : ''}>40時間（常時）</option>
       </select>`;
     }
+    function fmtUpper(min) { return (min / 60).toFixed(min % 60 ? 1 : 0) + '時間'; }
     $('#mList').addEventListener('change', async (e) => {
       const sel = e.target.closest('.upper-sel'); if (!sel) return;
       const staffId = sel.dataset.staff;
@@ -992,6 +1017,18 @@
       } catch (err) { const msg = $('#mMsg'); msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + err.message; }
     });
     $('#mList').addEventListener('click', async (e) => {
+      // 「常時40時間」の設定残りを28時間へ戻す（休業明けの取りこぼし回収）
+      const rst = e.target.dataset.reset28;
+      if (rst) {
+        const msg = $('#mMsg');
+        try {
+          await apiPost({ action: 'updateStaff', staffId: rst, upperMin: 1680, warnMin: 1560 });
+          msg.className = 'save-msg ok';
+          msg.textContent = `上限を28時間（通常）に戻しました（${staffName(rst)}）。ダッシュボードで超過が出ていないか確認してください。`;
+          await loadMemberList(); await loadStaff();
+        } catch (err) { msg.className = 'save-msg over'; msg.textContent = 'エラー: ' + err.message; }
+        return;
+      }
       const ret = e.target.dataset.retire, res = e.target.dataset.restore;
       if (ret && confirm('このメンバーを退職（監視対象から外す）にしますか？記録は残ります。')) {
         await apiPost({ action: 'updateStaff', staffId: ret, active: false }); await loadMemberList(); await loadStaff();
