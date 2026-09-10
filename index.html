@@ -616,11 +616,13 @@
 
     // ====== スタッフ一覧（共有・打刻/詳細の選択肢） ======
     let STAFF = [];
-    // 起動を並列にしたので、スタッフ選択肢がまだ空のまま「打刻入力」を開かれることがある。
+    // 起動の読み込み中に「打刻入力」を開かれると、スタッフ選択肢がまだ空のことがある。
     // 記録一覧はこの完了を待ってから読む。
     let STAFF_READY = Promise.resolve();
-    async function loadStaff() {
-      STAFF = await apiGet('getStaff');
+    async function loadStaff() { applyStaff(await apiGet('getStaff')); }
+    // 起動時は getBoot がスタッフ一覧も一緒に持ってくる。取得と反映を分けて、どちらからも使えるようにする。
+    function applyStaff(list) {
+      STAFF = list;
       const opts = STAFF.map(s => `<option value="${esc(s.staffId)}">${esc(s.name)}（${esc(s.staffId)}）</option>`).join('');
       $('#inStaff').innerHTML = opts || '<option value="">（在籍者なし）</option>';
       $('#detStaff').innerHTML = opts || '<option value="">（在籍者なし）</option>';
@@ -644,46 +646,50 @@
       const today = dateInputToApi($('#dashToday').value) || todayApi();
       $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>';
       try {
-        const d = await apiGet('getDashboard', { today });
-        DASH_TODAY = d.today;
-        $('#dashBanner').classList.toggle('show', d.anyOver);
-        $('#dashBanner').textContent = d.anyOver ? '⚠ 28時間超過のスタッフがいます' : '';
-        // 「常時40時間」の設定が残っている人がいると、休業が終わっても40時間で判定され続ける。
-        // 期間登録（長期休業タブ）は日付で自動に戻るが、この個別設定だけは自分では戻らないので警告する。
-        const stuck40 = d.cards.filter(c => c.upperMin > 1680);
-        const b40 = $('#dashBanner40');
-        b40.classList.toggle('show', stuck40.length > 0);
-        b40.innerHTML = stuck40.length
-          ? `⚠ 上限が「常時40時間」のままの人がいます: ${stuck40.map(c => esc(c.name)).join('、')}<br>
-             <span style="font-weight:500;font-size:14px">長期休業が終わっても28時間に戻りません。「メンバー」タブの「28時間に戻す」で戻してください。</span>`
-          : '';
-        if (!d.cards.length) { $('#dashCards').innerHTML = '<div class="loading">監視対象（在留資格「留学」の在籍者）がいません。「メンバー」から追加してください。</div>'; return; }
-        $('#dashCards').innerHTML = d.cards.map(c => {
-          const allowClass = c.tomorrowAllowanceMin <= 0 ? 'over' : (c.tomorrowAllowanceMin < 240 ? 'warn' : '');
-          const days = c.lookbackDays || 30;
-          let hist;
-          if (c.overCount30 > 0 && c.worstOver) {
-            const md = c.worstOver.start.split('/');
-            hist = `過去${days}日の超過: ${c.overCount30}回（最悪 ${c.worstOver.hhmm} / ${Number(md[1])}/${Number(md[2])}起算）`;
-          } else {
-            hist = `過去${days}日の超過: なし`;
-          }
-          // 今は超過だが明日は枠がプラス＝回復中（今日は超過、明日には解消の見込み）
-          const recovering = c.status === 'OVER' && c.tomorrowAllowanceMin > 0;
-          const recoverBadge = recovering ? '<span class="badge recover">回復中</span>' : '';
-          return `<div class="card ${c.status}">
-            <div class="top"><span class="name">${esc(c.name)}</span><span class="badges"><span class="badge ${c.status}">${c.status}</span>${recoverBadge}</span></div>
-            <div class="metrics">
-              <div class="metric"><div class="k">直近7日 実績（今日まで）</div><div class="v">${c.last7HHMM}</div></div>
-              <div class="metric"><div class="k">明日 働ける残り</div><div class="v ${allowClass}">${c.tomorrowAllowanceHHMM}</div></div>
-            </div>
-            ${recovering ? '<div class="hint" style="margin-top:6px">今日時点で超過中ですが、明日には解消の見込みです（上限まで ' + c.tomorrowAllowanceHHMM + '）。</div>' : ''}
-            <div class="worst">${hist}</div>
-            <button class="btn ghost small sim-btn" data-staff="${esc(c.staffId)}">シミュレーション</button>
-            <div class="sim-panel" id="sim-${esc(c.staffId)}" style="display:none"></div>
-          </div>`;
-        }).join('');
+        renderDashboard(await apiGet('getDashboard', { today }));
       } catch (e) { $('#dashCards').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
+    }
+
+    // 描画だけを切り出す。起動時は getBoot がまとめて取ってきた分をここに渡す。
+    function renderDashboard(d) {
+      DASH_TODAY = d.today;
+      $('#dashBanner').classList.toggle('show', d.anyOver);
+      $('#dashBanner').textContent = d.anyOver ? '⚠ 28時間超過のスタッフがいます' : '';
+      // 「常時40時間」の設定が残っている人がいると、休業が終わっても40時間で判定され続ける。
+      // 期間登録（長期休業タブ）は日付で自動に戻るが、この個別設定だけは自分では戻らないので警告する。
+      const stuck40 = d.cards.filter(c => c.upperMin > 1680);
+      const b40 = $('#dashBanner40');
+      b40.classList.toggle('show', stuck40.length > 0);
+      b40.innerHTML = stuck40.length
+        ? `⚠ 上限が「常時40時間」のままの人がいます: ${stuck40.map(c => esc(c.name)).join('、')}<br>
+           <span style="font-weight:500;font-size:14px">長期休業が終わっても28時間に戻りません。「メンバー」タブの「28時間に戻す」で戻してください。</span>`
+        : '';
+      if (!d.cards.length) { $('#dashCards').innerHTML = '<div class="loading">監視対象（在留資格「留学」の在籍者）がいません。「メンバー」から追加してください。</div>'; return; }
+      $('#dashCards').innerHTML = d.cards.map(c => {
+        const allowClass = c.tomorrowAllowanceMin <= 0 ? 'over' : (c.tomorrowAllowanceMin < 240 ? 'warn' : '');
+        const days = c.lookbackDays || 30;
+        let hist;
+        if (c.overCount30 > 0 && c.worstOver) {
+          const md = c.worstOver.start.split('/');
+          hist = `過去${days}日の超過: ${c.overCount30}回（最悪 ${c.worstOver.hhmm} / ${Number(md[1])}/${Number(md[2])}起算）`;
+        } else {
+          hist = `過去${days}日の超過: なし`;
+        }
+        // 今は超過だが明日は枠がプラス＝回復中（今日は超過、明日には解消の見込み）
+        const recovering = c.status === 'OVER' && c.tomorrowAllowanceMin > 0;
+        const recoverBadge = recovering ? '<span class="badge recover">回復中</span>' : '';
+        return `<div class="card ${c.status}">
+          <div class="top"><span class="name">${esc(c.name)}</span><span class="badges"><span class="badge ${c.status}">${c.status}</span>${recoverBadge}</span></div>
+          <div class="metrics">
+            <div class="metric"><div class="k">直近7日 実績（今日まで）</div><div class="v">${c.last7HHMM}</div></div>
+            <div class="metric"><div class="k">明日 働ける残り</div><div class="v ${allowClass}">${c.tomorrowAllowanceHHMM}</div></div>
+          </div>
+          ${recovering ? '<div class="hint" style="margin-top:6px">今日時点で超過中ですが、明日には解消の見込みです（上限まで ' + c.tomorrowAllowanceHHMM + '）。</div>' : ''}
+          <div class="worst">${hist}</div>
+          <button class="btn ghost small sim-btn" data-staff="${esc(c.staffId)}">シミュレーション</button>
+          <div class="sim-panel" id="sim-${esc(c.staffId)}" style="display:none"></div>
+        </div>`;
+      }).join('');
     }
 
     // カードのシミュレーション欄を開閉（同時に開くのは1枚）
@@ -1332,15 +1338,23 @@
       $('#navUsers').style.display = isAdmin() ? '' : 'none';
       $('#navAudit').style.display = isAdmin() ? '' : 'none';
       $('#navNotify').style.display = isAdmin() ? '' : 'none';
-      // GASは1本あたり1〜30秒かかる（Google側の都合）。直列で3本叩くと足し算で待たされるので、
-      // 起動時は「メンバー」と「ダッシュボード」だけを同時に投げる（待ち時間＝遅いほう1本分）。
+      // GASは1本あたり1〜30秒かかる（Google側の都合）。しかも同じブラウザのセッションから
+      // /exec を2本同時に投げると、Google側が直列に実行する。fetchは並列でも待ち時間は足し算になり
+      // （何もしないpingでも実測 3秒＋22秒）、25秒の打ち切りに当たって起動ごと失敗していた。
+      // なので起動は1往復にする。getBoot がスタッフ一覧とダッシュボードを1回の実行で返す。
       // 記録一覧(getLogs)は「打刻入力」タブを開いたときに読む。起動時には見えていない画面なので、
       // ここに置くと最初の表示を1本分まるごと遅らせるだけになる。
-      STAFF_READY = loadStaff();
-      await Promise.all([
-        STAFF_READY.catch((e) => { if (!(e instanceof AuthError)) console.error(e); }),
-        loadDashboard().catch((e) => { console.error(e); }),
-      ]);
+      const today = dateInputToApi($('#dashToday').value) || todayApi();
+      $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>';
+      STAFF_READY = apiGet('getBoot', { today }).then((d) => {
+        applyStaff(d.staff);
+        renderDashboard(d.dashboard);
+      });
+      try { await STAFF_READY; }
+      catch (e) {
+        if (!(e instanceof AuthError)) console.error(e);
+        $('#dashCards').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`;
+      }
     }
 
     (async function init() {
