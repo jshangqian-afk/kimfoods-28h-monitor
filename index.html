@@ -494,7 +494,13 @@
     class GatewayError extends Error {
       constructor() { super('Googleとの通信が不安定です。しばらく待ってから、もう一度お試しください。'); }
     }
-    const RETRY_MAX = 3;        // 初回を含む試行回数
+    const RETRY_MAX = 3;        // 通信障害の試行回数（初回を含む）
+    // 打ち切りは以前まったく再試行しなかった。起動が2往復あった頃は、やり直すと
+    // 25秒 × 2本 × 3回 まで膨らんで、待たせるだけになったため。
+    // 起動を1往復にした今は、もう一度投げても最悪およそ52秒で収まる。Googleの10〜30秒の
+    // スパイクは投げ直すと引き直しになる（実測で ping は 1.1〜4.4秒に戻る）ので、
+    // 黙って1回やり直すほうが「画面を再読み込みしてください」と突き放すより通る。
+    const TIMEOUT_MAX = 2;      // 打ち切りの試行回数（初回を含む）
     const RETRY_WAIT_MS = 1500; // 2回目以降の待ち時間（回を追うごとに伸ばす）
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -503,7 +509,7 @@
     // 打ち切りは再試行しない（待てば直る種類ではなく、待ち時間が積み上がるだけのため）。
     const FETCH_TIMEOUT_MS = 25000;
     class TimeoutError extends Error {
-      constructor() { super('Googleの応答が25秒以内に返りませんでした。画面を再読み込みしてください。'); }
+      constructor() { super('Googleの応答が返りませんでした。時間をおいて、もう一度お試しください。'); }
     }
     async function fetchLimited_(url, opts) {
       if (typeof AbortController === 'undefined') return fetch(url, opts); // 古い端末は従来どおり
@@ -526,32 +532,42 @@
       catch (e) { throw new GatewayError(); }
     }
 
-    // 通信障害のときだけ再試行する。業務エラー・認証エラーはそのまま投げる。
-    async function withRetry_(label, doFetch) {
-      let last;
-      for (let i = 0; i < RETRY_MAX; i++) {
-        if (i > 0) await sleep(RETRY_WAIT_MS * i);
+    // 通信の失敗だけ再試行する。業務エラー・認証エラーはそのまま投げる。
+    // 打ち切りと通信障害は原因が別なので、回数も別に数える（片方が他方の枠を食わないように）。
+    // onRetry はやり直しに入ったことを画面に出すため（黙って固まって見えるのを避ける）。
+    async function withRetry_(label, doFetch, onRetry) {
+      let attempt = 0, timeouts = 0, gateways = 0;
+      for (;;) {
+        if (attempt > 0) {
+          if (onRetry) { try { onRetry(attempt); } catch (e) { console.error(e); } }
+          await sleep(RETRY_WAIT_MS * attempt);
+        }
+        attempt++;
         try { return await doFetch(); }
         catch (e) {
-          // 打ち切りは再試行しない（3回やると最悪75秒待たせることになる）
-          if (e instanceof TimeoutError) throw e;
-          // fetch自体の失敗（オフライン等）も、待てば直る種類なので同じ扱いにする
-          if (!(e instanceof GatewayError) && !(e instanceof TypeError)) throw e;
-          last = (e instanceof TypeError) ? new GatewayError() : e;
-          console.warn(`通信を再試行します (${i + 1}/${RETRY_MAX}): ${label}`);
+          if (e instanceof TimeoutError) {
+            if (++timeouts >= TIMEOUT_MAX) throw e;
+          } else if (e instanceof GatewayError) {
+            if (++gateways >= RETRY_MAX) throw e;
+          } else if (e instanceof TypeError) {
+            // fetch自体の失敗（オフライン等）。待てば直る種類なので通信障害と同じ扱いにする
+            if (++gateways >= RETRY_MAX) throw new GatewayError();
+          } else {
+            throw e;
+          }
+          console.warn(`通信を再試行します (${label}): ${e.message}`);
         }
       }
-      throw last;
     }
 
-    async function apiGet(action, params = {}) {
+    async function apiGet(action, params = {}, onRetry) {
       const q = new URLSearchParams(Object.assign({ action, token: token() }, params)).toString();
       return withRetry_(action, async () => {
         const res = await fetchLimited_(API_URL + '?' + q);
         const json = await readJson_(res);
         if (!json.ok) handleFail(json);
         return json.data;
-      });
+      }, onRetry);
     }
     // 書き込みは自動で再試行しない。同じ打刻が二重に登録されるほうが害が大きいため、
     // 失敗したことをはっきり伝えて、実行するかどうかは人が決める。
@@ -642,12 +658,26 @@
       return upperMin - s;
     }
 
+    // ダッシュボード欄の状態表示。やり直し中と失敗を同じ場所に出す。
+    const dashWaiting = () => { $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>'; };
+    const dashRetrying = () => {
+      $('#dashCards').innerHTML = '<div class="loading">Googleの応答が遅いので、もう一度試しています…</div>';
+    };
+    // 失敗しても手動で押し直せるようにする（「再読み込みしてください」で終わらせない）。
+    // スタッフ一覧をまだ取れていなければ起動からやり直す。
+    function dashFailed(msg) {
+      $('#dashCards').innerHTML = `<div class="loading">エラー: ${esc(msg)}</div>`
+        + '<div style="text-align:center;margin-top:14px"><button class="btn" id="dashRetry">もう一度読み込む</button></div>';
+      const b = $('#dashRetry');
+      if (b) b.addEventListener('click', () => (STAFF.length ? loadDashboard() : boot()));
+    }
+
     async function loadDashboard() {
       const today = dateInputToApi($('#dashToday').value) || todayApi();
-      $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>';
+      dashWaiting();
       try {
-        renderDashboard(await apiGet('getDashboard', { today }));
-      } catch (e) { $('#dashCards').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
+        renderDashboard(await apiGet('getDashboard', { today }, dashRetrying));
+      } catch (e) { dashFailed(e.message); }
     }
 
     // 描画だけを切り出す。起動時は getBoot がまとめて取ってきた分をここに渡す。
@@ -1345,15 +1375,16 @@
       // 記録一覧(getLogs)は「打刻入力」タブを開いたときに読む。起動時には見えていない画面なので、
       // ここに置くと最初の表示を1本分まるごと遅らせるだけになる。
       const today = dateInputToApi($('#dashToday').value) || todayApi();
-      $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>';
-      STAFF_READY = apiGet('getBoot', { today }).then((d) => {
+      dashWaiting();
+      STAFF_READY = apiGet('getBoot', { today }, dashRetrying).then((d) => {
         applyStaff(d.staff);
         renderDashboard(d.dashboard);
       });
       try { await STAFF_READY; }
       catch (e) {
         if (!(e instanceof AuthError)) console.error(e);
-        $('#dashCards').innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`;
+        // 認証切れは showLogin が出るので、その裏にボタンを積まない
+        if (!(e instanceof AuthError)) dashFailed(e.message);
       }
     }
 
