@@ -172,6 +172,28 @@
     .editing-note { display: none; background: var(--warn-bg); color: #92400e; padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-weight: 600; }
     .editing-note.show { display: block; }
 
+    /* --- タイムカードOCR --- */
+    /* 既定は非表示。起動時に getBoot が「APIキーが入っている」と答えたときだけ出す */
+    .ocr-box { display: none; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 16px 0; }
+    .ocr-head { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .ocr-panel { display: none; background: #fff; border: 2px solid var(--primary); border-radius: 12px; padding: 14px 16px; margin: 16px 0; }
+    .ocr-panel.show { display: block; }
+    .ocr-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .ocr-table { width: 100%; border-collapse: collapse; font-size: 15px; }
+    .ocr-table th, .ocr-table td { padding: 6px 6px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    .ocr-table th { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .ocr-table td.day { font-weight: 700; font-size: 17px; }
+    /* 44px を割らない。iPadの指で押せない表にすると、結局ぜんぶ手入力に戻る */
+    .ocr-table input[type=text] { width: 72px; font-size: 17px; padding: 8px 6px; text-align: center; font-variant-numeric: tabular-nums; }
+    .ocr-table input[type=checkbox] { width: 26px; height: 26px; min-height: auto; }
+    .ocr-table tr.off { opacity: .45; }
+    .ocr-table td.note { white-space: normal; font-size: 12px; color: #92400e; max-width: 220px; }
+    .ocr-table td.jitsu { font-weight: 700; font-variant-numeric: tabular-nums; }
+    .ocr-note { background: var(--warn-bg); color: #92400e; padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 14px; font-weight: 600; }
+    .ocr-res { margin-top: 12px; font-size: 14px; }
+    .ocr-res .ng { color: var(--over); }
+    .ocr-res .okline { color: #065f46; }
+
     .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
     .keypad button { font-size: 26px; font-weight: 700; padding: 18px 0; border-radius: 12px;
       border: 1px solid var(--line); background: #fff; min-height: 60px; cursor: pointer; }
@@ -283,6 +305,43 @@
             <div class="field"><label>日付</label><input type="date" id="inDate"></div>
           </div>
           <div class="hint">日付を変えれば、後日・過去の日も入力できます（入力忘れの補完もここで）。</div>
+
+          <!-- タイムカードの写真から読み取る。読み取るだけで、登録は下の確認表を通す -->
+          <div class="ocr-box">
+            <div class="ocr-head">📷 タイムカードから読み取る</div>
+            <div class="hint" style="margin:0 0 10px">
+              上でスタッフを選んでから、カードの写真を撮ってください。
+              「出」「退」と、お昼の「外出・戻り」を読み取って確認表に出します。登録はその後です。
+            </div>
+            <input type="file" id="ocrFile" accept="image/*" style="display:none">
+            <button class="btn ghost" id="ocrBtn">タイムカードの写真を選ぶ</button>
+            <div class="save-msg" id="ocrMsg"></div>
+          </div>
+
+          <!-- 確認表。読み取り結果はここで直してから登録する -->
+          <div class="ocr-panel" id="ocrPanel">
+            <div class="ocr-head" id="ocrPanelTitle">読み取り結果の確認</div>
+            <div class="hint" style="margin:0 0 10px">
+              間違いはその場で直し、登録しない行はチェックを外してください。
+              カードには年月が入っていないので、下で選びます。
+            </div>
+            <div class="toolbar" style="margin-bottom:10px">
+              <div class="field"><label>年</label><select id="ocrYear"></select></div>
+              <div class="field"><label>月</label><select id="ocrMonth"></select></div>
+              <div class="field">
+                <label>&nbsp;</label>
+                <button class="btn ghost small" id="ocrToggleAll">全部の選択を外す</button>
+              </div>
+            </div>
+            <div id="ocrWarn"></div>
+            <div class="ocr-table-wrap"><table class="ocr-table" id="ocrTable"></table></div>
+            <div style="display:flex; gap:10px; margin-top:14px; flex-wrap:wrap;">
+              <button class="btn" id="ocrSaveBtn">この内容で登録</button>
+              <button class="btn ghost" id="ocrCancelBtn">やめる</button>
+            </div>
+            <div class="save-msg" id="ocrSaveMsg"></div>
+            <div id="ocrResult"></div>
+          </div>
 
           <div class="timefields">
             <div class="timefield"><label>開始</label><div class="timebox" data-time="start"><span class="ph">--:--</span></div></div>
@@ -511,11 +570,14 @@
     class TimeoutError extends Error {
       constructor() { super('Googleの応答が返りませんでした。時間をおいて、もう一度お試しください。'); }
     }
-    async function fetchLimited_(url, opts) {
+    // タイムカードOCRだけは別枠。外部の画像認識を待つぶん、25秒では足りずに
+    // 「読み取れたのに打ち切られる」が起きる（読み取りは有料なので空振りが一番もったいない）。
+    const OCR_TIMEOUT_MS = 90000;
+    async function fetchLimited_(url, opts, timeoutMs) {
       if (typeof AbortController === 'undefined') return fetch(url, opts); // 古い端末は従来どおり
       const ac = new AbortController();
       let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; ac.abort(); }, FETCH_TIMEOUT_MS);
+      const timer = setTimeout(() => { timedOut = true; ac.abort(); }, timeoutMs || FETCH_TIMEOUT_MS);
       try {
         return await fetch(url, Object.assign({}, opts || {}, { signal: ac.signal }));
       } catch (e) {
@@ -895,6 +957,293 @@
       } finally { btn.disabled = false; }
     }
     $('#saveBtn').addEventListener('click', saveLog);
+
+    // ====== 画面2-2: タイムカードOCR ======
+    // 読み取り → 確認表 → 一括登録、の3段。**読み取っただけでは何も保存されない。**
+    // 精度は100%にはならないので、直す場所を必ず1回通す作りにしてある。
+    let OCR_ROWS = [];  // {day, start, end, brk, overnight, note, use}
+
+    // 写真をそのまま送るとGASの往復にもAPIにも重すぎる。長辺1600pxで十分読める
+    // （それ以上はAPI側でどのみち縮小される）。
+    function shrinkImage_(file) {
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const maxEdge = 1600;
+            const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+            const w = Math.max(1, Math.round(img.width * scale));
+            const h = Math.max(1, Math.round(img.height * scale));
+            const cv = document.createElement('canvas');
+            cv.width = w; cv.height = h;
+            cv.getContext('2d').drawImage(img, 0, 0, w, h);
+            const dataUrl = cv.toDataURL('image/jpeg', 0.8);
+            resolve({ base64: dataUrl.slice(dataUrl.indexOf(',') + 1), mimeType: 'image/jpeg' });
+          } catch (e) { reject(new Error('写真を処理できませんでした。もう一度撮ってみてください。')); }
+          finally { URL.revokeObjectURL(url); }
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          // iPhoneのHEICをパソコンのブラウザで開いた場合など。撮り直しが一番早い
+          reject(new Error('この写真を読み込めませんでした。カメラで撮り直すか、別の写真を選んでください。'));
+        };
+        img.src = url;
+      });
+    }
+
+    // OCRは書き込みではないので、通信障害なら投げ直してよい（打ち切りは待ち時間が
+    // 積み上がるだけなので投げ直さない）。読み取り自体は有料なので回数は絞る。
+    async function apiOcr_(img) {
+      const payload = JSON.stringify({
+        action: 'ocrTimecard', token: token(),
+        imageBase64: img.base64, mimeType: img.mimeType
+      });
+      for (let attempt = 1; ; attempt++) {
+        let res;
+        try {
+          res = await fetchLimited_(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: payload
+          }, OCR_TIMEOUT_MS);
+        } catch (e) {
+          if (e instanceof TimeoutError) throw e;
+          if (attempt >= 2) throw new GatewayError();
+          await sleep(RETRY_WAIT_MS); continue;
+        }
+        let json;
+        try { json = await readJson_(res); }
+        catch (e) {
+          if (attempt >= 2) throw e;
+          await sleep(RETRY_WAIT_MS); continue;
+        }
+        if (!json.ok) handleFail(json);
+        return json.data;
+      }
+    }
+
+    $('#ocrBtn').addEventListener('click', () => {
+      const msg = $('#ocrMsg');
+      // スタッフはカードの氏名欄ではなくアプリで選ぶ。誰の記録かを取り違えると
+      // 判定そのものが別人のものになるので、選ぶ前には撮らせない。
+      if (!$('#inStaff').value) {
+        msg.className = 'save-msg warn';
+        msg.textContent = '先に上で「スタッフ」を選んでください。';
+        return;
+      }
+      msg.style.display = 'none';
+      $('#ocrFile').value = ''; // 同じ写真をもう一度選んでも change が出るように
+      $('#ocrFile').click();
+    });
+
+    $('#ocrFile').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const msg = $('#ocrMsg'), btn = $('#ocrBtn');
+      const staffId = $('#inStaff').value;
+      const opt = $('#inStaff').options[$('#inStaff').selectedIndex];
+      const staffName = opt ? opt.textContent : staffId;
+      btn.disabled = true;
+      msg.className = 'save-msg saving';
+      msg.innerHTML = '<span class="spinner"></span>写真を読み取っています…（10〜30秒かかります。画面はそのままでお待ちください）';
+      $('#ocrPanel').classList.remove('show');
+      try {
+        const img = await shrinkImage_(file);
+        const data = await apiOcr_(img);
+        OCR_ROWS = data.rows.map(r => ({
+          day: r.day, start: r.start, end: r.end, brk: r.brk,
+          overnight: false, note: r.note, use: true
+        }));
+        openOcrPanel(staffName, data.warnings || []);
+        msg.className = 'save-msg ok';
+        msg.textContent = '✓ ' + OCR_ROWS.length + '行を読み取りました。下の確認表を見てください（まだ登録されていません）。';
+      } catch (err) {
+        msg.className = 'save-msg over';
+        msg.textContent = 'エラー: ' + err.message;
+      } finally {
+        btn.disabled = false;
+        $('#ocrFile').value = '';
+      }
+    });
+
+    function openOcrPanel(staffName, warnings) {
+      $('#ocrPanelTitle').textContent = '読み取り結果の確認（' + staffName + '）';
+
+      // カードには年月が無い。16〜31日だけのカードを月初に入れる場面が多いので、
+      // 読めた日がすべて今日より後なら「先月のカード」と見て既定を先月にする。
+      const now = new Date();
+      let y = now.getFullYear(), m = now.getMonth() + 1;
+      if (OCR_ROWS.length && OCR_ROWS.every(r => r.day > now.getDate())) {
+        m -= 1; if (m === 0) { m = 12; y -= 1; }
+      }
+      const ySel = $('#ocrYear'), mSel = $('#ocrMonth');
+      ySel.innerHTML = '';
+      for (let v = now.getFullYear() - 2; v <= now.getFullYear(); v++) {
+        ySel.insertAdjacentHTML('beforeend', `<option value="${v}"${v === y ? ' selected' : ''}>${v}年</option>`);
+      }
+      mSel.innerHTML = '';
+      for (let v = 1; v <= 12; v++) {
+        mSel.insertAdjacentHTML('beforeend', `<option value="${v}"${v === m ? ' selected' : ''}>${v}月</option>`);
+      }
+
+      const warn = $('#ocrWarn');
+      warn.innerHTML = (warnings || []).map(w => `<div class="ocr-note">⚠ ${esc(w)}</div>`).join('');
+      $('#ocrResult').innerHTML = '';
+      $('#ocrSaveMsg').style.display = 'none';
+      renderOcrTable();
+      $('#ocrPanel').classList.add('show');
+      $('#ocrPanel').scrollIntoView({ block: 'start' });
+    }
+
+    function renderOcrTable() {
+      const head = '<tr><th>登録</th><th>日</th><th>開始</th><th>終了</th><th>休憩</th>'
+        + '<th>日またぎ</th><th>実労働</th><th>備考</th></tr>';
+      const body = OCR_ROWS.map((r, i) => {
+        const jitsu = fmtMin(calcJitsu(r.start, r.end, r.brk, r.overnight));
+        return `<tr class="${r.use ? '' : 'off'}">`
+          + `<td><input type="checkbox" data-ocr="use" data-i="${i}"${r.use ? ' checked' : ''}></td>`
+          + `<td class="day">${r.day}</td>`
+          + `<td><input type="text" inputmode="numeric" data-ocr="start" data-i="${i}" value="${esc(r.start)}" placeholder="--:--"></td>`
+          + `<td><input type="text" inputmode="numeric" data-ocr="end" data-i="${i}" value="${esc(r.end)}" placeholder="--:--"></td>`
+          + `<td><input type="text" inputmode="numeric" data-ocr="brk" data-i="${i}" value="${esc(r.brk)}" placeholder="--:--"></td>`
+          + `<td><input type="checkbox" data-ocr="overnight" data-i="${i}"${r.overnight ? ' checked' : ''}></td>`
+          + `<td class="jitsu">${jitsu}</td>`
+          + `<td class="note">${esc(r.note || '')}</td>`
+          + '</tr>';
+      }).join('');
+      $('#ocrTable').innerHTML = head + body;
+    }
+
+    // "701" "７:０１" "7.1" などを "7:01" に寄せる。読めなければ null（＝直してもらう）
+    function ocrFixTime_(v) {
+      let s = String(v === null || v === undefined ? '' : v).trim()
+        .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+        .replace(/[：.．]/g, ':');
+      if (!s) return '';
+      let m = s.match(/^(\d{1,2}):(\d{1,2})$/);
+      if (!m) {
+        const d = s.match(/^(\d{3,4})$/);
+        if (!d) return null;
+        const t = d[1].length === 3 ? '0' + d[1] : d[1];
+        m = [null, t.slice(0, 2), t.slice(2)];
+      }
+      const h = Number(m[1]), mi = Number(m[2]);
+      if (!(h >= 0 && h <= 23) || !(mi >= 0 && mi <= 59)) return null;
+      return String(h) + ':' + pad2(mi);
+    }
+
+    /** 1行の実労働だけ描き直す。表ごと作り直すと、次の枠を触った指が空振りする。 */
+    function updateOcrRow_(i) {
+      const row = OCR_ROWS[i], tr = $('#ocrTable').rows[i + 1]; // 0行目は見出し
+      if (!row || !tr) return;
+      tr.className = row.use ? '' : 'off';
+      const cell = tr.querySelector('td.jitsu');
+      if (cell) cell.textContent = fmtMin(calcJitsu(row.start, row.end, row.brk, row.overnight));
+    }
+
+    $('#ocrTable').addEventListener('change', (e) => {
+      const t = e.target, key = t.dataset.ocr;
+      if (!key) return;
+      const i = Number(t.dataset.i), row = OCR_ROWS[i];
+      if (!row) return;
+      if (key === 'use' || key === 'overnight') { row[key] = t.checked; updateOcrRow_(i); return; }
+      const fixed = ocrFixTime_(t.value);
+      if (fixed === null) {
+        // 捨てずに戻す。消してしまうと「何が読み取れていたか」が分からなくなる
+        t.value = row[key];
+        $('#ocrSaveMsg').className = 'save-msg warn';
+        $('#ocrSaveMsg').textContent = '時刻は 7:00 のように入力してください（700 でも大丈夫です）。';
+        return;
+      }
+      row[key] = fixed;
+      t.value = fixed;
+      $('#ocrSaveMsg').style.display = 'none';
+      updateOcrRow_(i);
+    });
+
+    $('#ocrToggleAll').addEventListener('click', () => {
+      const anyOn = OCR_ROWS.some(r => r.use);
+      OCR_ROWS.forEach(r => { r.use = !anyOn; });
+      $('#ocrToggleAll').textContent = anyOn ? '全部を選ぶ' : '全部の選択を外す';
+      renderOcrTable();
+    });
+
+    function closeOcrPanel() {
+      OCR_ROWS = [];
+      $('#ocrPanel').classList.remove('show');
+      $('#ocrWarn').innerHTML = '';
+      $('#ocrResult').innerHTML = '';
+      $('#ocrSaveMsg').style.display = 'none';
+    }
+    $('#ocrCancelBtn').addEventListener('click', () => { closeOcrPanel(); $('#ocrMsg').style.display = 'none'; });
+
+    async function saveOcrRows() {
+      const msg = $('#ocrSaveMsg'), btn = $('#ocrSaveBtn');
+      const staffId = $('#inStaff').value;
+      if (!staffId) { msg.className = 'save-msg over'; msg.textContent = 'スタッフが選ばれていません。'; return; }
+
+      const y = Number($('#ocrYear').value), mo = Number($('#ocrMonth').value);
+      const picked = OCR_ROWS.filter(r => r.use);
+      if (!picked.length) { msg.className = 'save-msg warn'; msg.textContent = '登録する行が選ばれていません。'; return; }
+
+      // その月に無い日（2月31日など）はサーバに送る前に弾く。読み取りのずれで起きる
+      const lastDay = new Date(y, mo, 0).getDate();
+      const bad = picked.filter(r => r.day > lastDay);
+      if (bad.length) {
+        msg.className = 'save-msg over';
+        msg.textContent = `${y}年${mo}月に ${bad.map(r => r.day + '日').join('・')} はありません。年月か日付を確認してください。`;
+        return;
+      }
+
+      const rows = picked.map(r => ({
+        date: `${y}/${pad2(mo)}/${pad2(r.day)}`,
+        start: r.start, end: r.end, brk: r.brk, overnight: r.overnight
+      }));
+
+      btn.disabled = true;
+      msg.className = 'save-msg saving';
+      msg.innerHTML = `<span class="spinner"></span>${rows.length}件を登録しています…`;
+      $('#ocrResult').innerHTML = '';
+      try {
+        const r = await apiPost({ action: 'addLogs', staffId, rows, source: 'タイムカードOCR' });
+        // 行ごとに結果が返る。入った行・入らなかった行とその理由を必ず見せる
+        const lines = r.results.map((x) => {
+          const src = rows[x.index];
+          const label = `${esc(x.date)} ${esc(src.start || '')}〜${esc(src.end || '')}`;
+          if (!x.ok) return `<div class="ng">✗ ${label}　${esc(x.error).replace(/\n/g, ' ')}</div>`;
+          const w = x.warning ? `　⚠ ${esc(x.warning)}` : '';
+          return `<div class="okline">✓ ${label}　実労働 ${esc(x.jitsuHHMM)}${w}</div>`;
+        }).join('');
+        $('#ocrResult').innerHTML = `<div class="ocr-res">${lines}</div>`;
+
+        if (r.ngCount === 0) {
+          msg.className = 'save-msg ok';
+          msg.textContent = `✓ ${r.okCount}件すべて登録しました。`;
+          // 全部入ったら確認表は閉じる。残しておくと二度押しの元になる
+          OCR_ROWS = [];
+          $('#ocrTable').innerHTML = '';
+          $('#ocrWarn').innerHTML = '';
+        } else {
+          msg.className = 'save-msg warn';
+          msg.innerHTML = `${r.okCount}件を登録し、${r.ngCount}件は登録できませんでした。`
+            + '<br>下の理由を見て直し、登録できなかった行だけを選び直して、もう一度押してください。'
+            + '<br><b>登録できた行のチェックは外れています。</b>';
+          // 入った行だけ外す。押し直しても二重登録にならないようにする
+          const okIdx = {};
+          r.results.forEach((x) => { if (x.ok) okIdx[x.index] = true; });
+          let n = -1;
+          OCR_ROWS.forEach((row) => { if (row.use) { n++; if (okIdx[n]) row.use = false; } });
+          renderOcrTable();
+        }
+        await loadLogList();
+        loadDashboard();
+      } catch (e) {
+        msg.className = 'save-msg over';
+        msg.innerHTML = 'エラー: ' + esc(e.message).replace(/\n/g, '<br>');
+      } finally { btn.disabled = false; }
+    }
+    $('#ocrSaveBtn').addEventListener('click', saveOcrRows);
 
     // 記録一覧（選択スタッフの直近30日）
     async function loadLogList() {
@@ -1379,6 +1728,9 @@
       STAFF_READY = apiGet('getBoot', { today }, dashRetrying).then((d) => {
         applyStaff(d.staff);
         renderDashboard(d.dashboard);
+        // 読み取りボタンはAPIキーが入っている環境だけに出す（既定は非表示）。
+        // 押しても必ず失敗するボタンは、無いより分かりにくい
+        if (d.ocr) $('.ocr-box').style.display = '';
       });
       try { await STAFF_READY; }
       catch (e) {
