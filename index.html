@@ -173,8 +173,11 @@
     .editing-note.show { display: block; }
 
     /* --- タイムカードOCR --- */
-    /* 既定は非表示。起動時に getBoot が「APIキーが入っている」と答えたときだけ出す */
+    /* 既定は非表示。起動時に getBoot が「APIキーが入っている」と答えたときだけ出す。
+       表示は必ず .show を足すこと。style.display='' はインライン指定を消すだけで、
+       ここの display:none が残るため出ない（2026-09-20にこれで出ないバグを出した）。 */
     .ocr-box { display: none; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 16px 0; }
+    .ocr-box.show { display: block; }
     .ocr-head { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
     .ocr-panel { display: none; background: #fff; border: 2px solid var(--primary); border-radius: 12px; padding: 14px 16px; margin: 16px 0; }
     .ocr-panel.show { display: block; }
@@ -1730,7 +1733,7 @@
         renderDashboard(d.dashboard);
         // 読み取りボタンはAPIキーが入っている環境だけに出す（既定は非表示）。
         // 押しても必ず失敗するボタンは、無いより分かりにくい
-        if (d.ocr) $('.ocr-box').style.display = '';
+        if (d.ocr) $('.ocr-box').classList.add('show');
       });
       try { await STAFF_READY; }
       catch (e) {
