@@ -179,6 +179,35 @@
     .ocr-box { display: none; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 16px 0; }
     .ocr-box.show { display: block; }
     .ocr-head { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .ocr-btns { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+    /* --- カメラ --- */
+    .cam-wrap {
+      display: none; position: fixed; inset: 0; z-index: 100; background: #000;
+      flex-direction: column; align-items: center; justify-content: center;
+    }
+    .cam-wrap.show { display: flex; }
+    .cam-stage { position: relative; flex: 1; width: 100%; min-height: 0; display: flex; align-items: center; justify-content: center; }
+    /* 枠は映像そのものに対して置く。stage 基準だと画面比率が変わったとき映像からはみ出す */
+    .cam-frame { position: relative; max-width: 100%; max-height: 100%; display: flex; }
+    .cam-frame video { max-width: 100%; max-height: 100%; display: block; }
+    /* カードは縦長。目安の枠を出すと、切れた写真・斜めの写真が減る。
+       撮るのは枠の中だけではなく映像の全体（切り落として撮り直しになるほうが困る）。 */
+    .cam-guide {
+      position: absolute; top: 4%; bottom: 4%; left: 20%; right: 20%;
+      pointer-events: none; border: 3px dashed rgba(255,255,255,.75); border-radius: 10px;
+    }
+    .cam-msg { color: #fff; font-size: 14px; padding: 10px 16px; text-align: center; }
+    .cam-bar {
+      display: flex; align-items: center; justify-content: center; gap: 18px;
+      padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); width: 100%; background: #000;
+    }
+    .cam-shutter {
+      width: 74px; height: 74px; border-radius: 50%; background: #fff; cursor: pointer;
+      border: 5px solid #9ca3af; min-height: 74px; flex: none;
+    }
+    .cam-shutter:active { background: #d1d5db; }
+    .cam-shutter:disabled { opacity: .5; }
     .ocr-panel { display: none; background: #fff; border: 2px solid var(--primary); border-radius: 12px; padding: 14px 16px; margin: 16px 0; }
     .ocr-panel.show { display: block; }
     .ocr-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -317,8 +346,14 @@
               上でスタッフを選んでから、カードの写真を撮ってください。
               「出」「退」と、お昼の「外出・戻り」を読み取って確認表に出します。登録はその後です。
             </div>
-            <input type="file" id="ocrFile" accept="image/*" style="display:none">
-            <button class="btn ghost" id="ocrBtn">タイムカードの写真を選ぶ</button>
+            <!-- capture はiPad/iPhoneで効く。パソコンでは無視されるので、
+                 そちら用にページ内カメラ（camWrap）を用意してある -->
+            <input type="file" id="ocrFile" accept="image/*" capture="environment" style="display:none">
+            <input type="file" id="ocrPick" accept="image/*" style="display:none">
+            <div class="ocr-btns">
+              <button class="btn" id="ocrBtn">📷 カメラで撮る</button>
+              <button class="btn ghost small" id="ocrPickBtn">保存ずみの写真から選ぶ</button>
+            </div>
             <div class="save-msg" id="ocrMsg"></div>
           </div>
 
@@ -508,6 +543,22 @@
       <div id="aList"><div class="loading">読み込み中…</div></div>
     </section>
   </main>
+  </div>
+
+  <!-- ============ カメラ（タイムカード撮影） ============ -->
+  <!-- main の外に置く。変形やフィルタのかかった親の中に入れると position:fixed が効かない -->
+  <div class="cam-wrap" id="camWrap">
+    <div class="cam-stage">
+      <div class="cam-frame">
+        <video id="camVideo" playsinline muted autoplay></video>
+        <div class="cam-guide"></div>
+      </div>
+    </div>
+    <div class="cam-msg" id="camMsg">カードが枠におさまるように、まっすぐ構えてください</div>
+    <div class="cam-bar">
+      <button class="btn ghost" id="camCancel">やめる</button>
+      <button class="cam-shutter" id="camShoot" aria-label="撮る"></button>
+    </div>
   </div>
 
   <!-- ============ 変更履歴モーダル ============ -->
@@ -1029,33 +1080,30 @@
       }
     }
 
-    $('#ocrBtn').addEventListener('click', () => {
+    /**
+     * スタッフが選ばれているか。カードの氏名欄ではなくアプリで選ぶ方式なので、
+     * 誰の記録かを取り違えると判定そのものが別人のものになる。選ぶ前には撮らせない。
+     */
+    function ocrStaffOrWarn_() {
       const msg = $('#ocrMsg');
-      // スタッフはカードの氏名欄ではなくアプリで選ぶ。誰の記録かを取り違えると
-      // 判定そのものが別人のものになるので、選ぶ前には撮らせない。
       if (!$('#inStaff').value) {
         msg.className = 'save-msg warn';
         msg.textContent = '先に上で「スタッフ」を選んでください。';
-        return;
+        return null;
       }
       msg.style.display = 'none';
-      $('#ocrFile').value = ''; // 同じ写真をもう一度選んでも change が出るように
-      $('#ocrFile').click();
-    });
-
-    $('#ocrFile').addEventListener('change', async (e) => {
-      const file = e.target.files && e.target.files[0];
-      if (!file) return;
-      const msg = $('#ocrMsg'), btn = $('#ocrBtn');
-      const staffId = $('#inStaff').value;
       const opt = $('#inStaff').options[$('#inStaff').selectedIndex];
-      const staffName = opt ? opt.textContent : staffId;
-      btn.disabled = true;
+      return opt ? opt.textContent : $('#inStaff').value;
+    }
+
+    /** 撮る／選ぶのどちらから来ても、ここから先は同じ。 */
+    async function runOcr(img, staffName) {
+      const msg = $('#ocrMsg');
+      $('#ocrBtn').disabled = true; $('#ocrPickBtn').disabled = true;
       msg.className = 'save-msg saving';
       msg.innerHTML = '<span class="spinner"></span>写真を読み取っています…（10〜30秒かかります。画面はそのままでお待ちください）';
       $('#ocrPanel').classList.remove('show');
       try {
-        const img = await shrinkImage_(file);
         const data = await apiOcr_(img);
         OCR_ROWS = data.rows.map(r => ({
           day: r.day, start: r.start, end: r.end, brk: r.brk,
@@ -1068,10 +1116,107 @@
         msg.className = 'save-msg over';
         msg.textContent = 'エラー: ' + err.message;
       } finally {
-        btn.disabled = false;
-        $('#ocrFile').value = '';
+        $('#ocrBtn').disabled = false; $('#ocrPickBtn').disabled = false;
       }
+    }
+
+    // ---- カメラで撮る ----
+    // iPad/iPhone は input の capture でカメラが開く。パソコンでは capture が無視されて
+    // ファイル選択になってしまうので、ページ内にカメラを出す（getUserMedia）。
+    let CAM_STREAM = null, CAM_NAME = '';
+    const hasGetUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+    async function openCamera(staffName) {
+      CAM_NAME = staffName;
+      const msg = $('#ocrMsg');
+      try {
+        CAM_STREAM = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' }, // 背面カメラ（あれば）
+            // 印字が細かいので解像度は取れるだけ取る。端末側で頭打ちになる
+            width: { ideal: 2560 }, height: { ideal: 1440 }
+          },
+          audio: false
+        });
+      } catch (e) {
+        // 拒否・カメラ無し・他アプリが使用中など。ファイル選択に逃がす
+        msg.className = 'save-msg warn';
+        msg.textContent = 'カメラを使えませんでした（' + (e && e.name ? e.name : e)
+          + '）。ブラウザのカメラ許可を確認するか、「保存ずみの写真から選ぶ」をお使いください。';
+        return;
+      }
+      const v = $('#camVideo');
+      v.srcObject = CAM_STREAM;
+      try { await v.play(); } catch (e) { /* 自動再生が弾かれても表示はされる */ }
+      $('#camWrap').classList.add('show');
+      $('#camShoot').disabled = false;
+    }
+
+    function closeCamera() {
+      $('#camWrap').classList.remove('show');
+      const v = $('#camVideo');
+      v.pause(); v.srcObject = null;
+      // トラックを止めないとカメラのランプが点いたままになる
+      if (CAM_STREAM) { CAM_STREAM.getTracks().forEach(t => t.stop()); CAM_STREAM = null; }
+    }
+
+    /** 映像の1コマを、送信できる大きさのJPEGにする。 */
+    function grabFrame_(video) {
+      const w0 = video.videoWidth, h0 = video.videoHeight;
+      if (!w0 || !h0) throw new Error('カメラの映像がまだ出ていません。少し待ってからもう一度押してください。');
+      const maxEdge = 1600;
+      const scale = Math.min(1, maxEdge / Math.max(w0, h0));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(w0 * scale); cv.height = Math.round(h0 * scale);
+      cv.getContext('2d').drawImage(video, 0, 0, cv.width, cv.height);
+      const dataUrl = cv.toDataURL('image/jpeg', 0.8);
+      return { base64: dataUrl.slice(dataUrl.indexOf(',') + 1), mimeType: 'image/jpeg' };
+    }
+
+    $('#camShoot').addEventListener('click', () => {
+      let img;
+      try { img = grabFrame_($('#camVideo')); }
+      catch (e) { $('#camMsg').textContent = e.message; return; }
+      const name = CAM_NAME;
+      closeCamera();
+      runOcr(img, name);
     });
+    $('#camCancel').addEventListener('click', closeCamera);
+
+    $('#ocrBtn').addEventListener('click', () => {
+      const staffName = ocrStaffOrWarn_();
+      if (!staffName) return;
+      if (hasGetUserMedia) { openCamera(staffName); return; }
+      // 古い端末向け。capture 付きの input なら iPad/iPhone でカメラが開く
+      $('#ocrFile').value = '';
+      $('#ocrFile').click();
+    });
+
+    // ---- 保存ずみの写真から選ぶ ----
+    $('#ocrPickBtn').addEventListener('click', () => {
+      if (!ocrStaffOrWarn_()) return;
+      $('#ocrPick').value = ''; // 同じ写真をもう一度選んでも change が出るように
+      $('#ocrPick').click();
+    });
+
+    async function onPickedFile(e) {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const staffName = ocrStaffOrWarn_();
+      e.target.value = '';
+      if (!staffName) return;
+      let img;
+      try { img = await shrinkImage_(file); }
+      catch (err) {
+        const msg = $('#ocrMsg');
+        msg.className = 'save-msg over';
+        msg.textContent = 'エラー: ' + err.message;
+        return;
+      }
+      runOcr(img, staffName);
+    }
+    $('#ocrFile').addEventListener('change', onPickedFile);
+    $('#ocrPick').addEventListener('change', onPickedFile);
 
     function openOcrPanel(staffName, warnings) {
       $('#ocrPanelTitle').textContent = '読み取り結果の確認（' + staffName + '）';
