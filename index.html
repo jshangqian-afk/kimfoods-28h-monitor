@@ -138,6 +138,9 @@
     .sim-panel { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; }
     .sim-summary { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
     .sim-summary.over { color: var(--over); }
+    .week-room { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .dash-stale { font-size: 14px; color: var(--muted); margin: 0 0 10px; }
+    .dash-stale.err { color: var(--over); font-weight: 700; }
     .sim-table { width: 100%; border-collapse: collapse; }
     .sim-table th, .sim-table td { padding: 7px 6px; border-bottom: 1px solid var(--line); font-size: 15px; text-align: left; }
     .sim-table th { color: var(--muted); font-size: 12px; }
@@ -209,6 +212,78 @@
     .tag.PROG { background: #6366f1; } .tag.off { background: #9ca3af; }
     .loading { color: var(--muted); padding: 20px; }
     .row-actions { display: flex; gap: 8px; }
+
+    /* --- メニュー（PC・iPad）--- */
+    nav .ls, nav .nav-more { display: none; }
+    .input-grid > div { min-width: 0; } /* 中身の幅でページ全体が引き伸ばされるのを防ぐ */
+
+    /* ====== スマホ幅（700px以下）だけの組み替え。PC・iPadの見た目は変えない ====== */
+    @media (max-width: 700px) {
+      /* 上部は1行に縮め、貼りつけない（画面の4割をふさいでいたため） */
+      header { position: static; padding: 8px 16px; gap: 8px; flex-wrap: nowrap; justify-content: space-between; }
+      header h1 { font-size: 16px; }
+      .who { font-size: 12px; min-width: 0; }
+      .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      /* メニューは画面下に固定のタブバー（よく使う3画面＋その他） */
+      nav {
+        position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; margin: 0;
+        display: grid; grid-template-columns: repeat(4, 1fr); gap: 0;
+        background: #111827; border-top: 1px solid #1f2937;
+        padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
+      }
+      nav button { background: transparent; border-radius: 10px; padding: 6px 2px; font-size: 13px; min-height: 52px; }
+      nav button.active { background: var(--primary); }
+      nav .lf { display: none; }
+      nav .ls { display: inline; }
+      nav .nav-more { display: block; }
+      /* 「その他」の中身：タブバーの上に縦に並べる */
+      nav .nav-sub { display: none; }
+      nav.more-open .nav-sub:not([style*="none"]) {
+        display: block; position: fixed; left: 12px; right: 12px; z-index: 51;
+        background: #1f2937; color: #f9fafb; border-radius: 0; min-height: 52px; font-size: 16px; text-align: left; padding: 0 18px;
+      }
+      nav.more-open .nav-sub.active { background: var(--primary); }
+      .more-backdrop { position: fixed; inset: 0; background: rgba(17,24,39,.45); z-index: 49; }
+      main { padding: 12px 16px calc(84px + env(safe-area-inset-bottom)); }
+
+      /* 打刻入力：入力欄 → テンキー → 保存 → 記録一覧 の順に並べ替える */
+      .input-grid { display: flex; flex-direction: column; align-items: stretch; gap: 0; }
+      #saveBtn { flex: 1; }
+      .in-main { display: contents; }
+      .in-main > * { order: 1; }
+      .in-kp { order: 2; margin: 4px 0 6px; }
+      .in-main > .in-rest { order: 3; }
+      .input-grid .toolbar .field { flex: 1 1 100%; }
+      .input-grid .toolbar select, .input-grid .toolbar input { width: 100%; }
+      .timefields { gap: 8px; margin: 12px 0; }
+      .timebox { font-size: 24px; padding: 12px 4px; }
+      .keypad { gap: 8px; }
+      .keypad button { padding: 12px 0; min-height: 52px; font-size: 24px; }
+
+      /* 列の多い表は1件ずつのカードにする（見出しは各行の左に出す） */
+      table.rtable, .rtable tbody, .rtable tr, .rtable td { display: block; width: 100%; }
+      .rtable { background: transparent; }
+      .rtable thead { display: none; }
+      .rtable tr { background: #fff; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; padding: 6px 0; }
+      .rtable tr.OVER { background: var(--over-bg); } .rtable tr.WARN { background: var(--warn-bg); }
+      /* 各項目は見出しを上・値を下に置く（横並びだと半分幅で日付が途中で折れるため） */
+      .rtable td { display: flex; flex-direction: column; align-items: flex-start; gap: 0;
+        border: none; padding: 5px 14px; text-align: left; overflow-wrap: anywhere; min-width: 0; }
+      .rtable td::before { content: attr(data-label); font-size: 11px; color: var(--muted); font-weight: 600; }
+      .rtable td[data-label=""]::before { content: none; }
+      .rtable td .row-actions { flex-wrap: wrap; margin-top: 4px; }
+      /* 縦に長くならないよう2列に詰める。先頭（日付・名前など）と末尾（操作・内容）、
+         長くなる対象メンバー欄は横いっぱい */
+      .rtable tr { display: grid; grid-template-columns: 1fr 1fr; column-gap: 4px; }
+      .rtable td:first-child { grid-column: 1 / -1; font-weight: 700; }
+      .rtable td:last-child, .rtable td.vtargets { grid-column: 1 / -1; }
+      .rtable td[colspan] { grid-column: 1 / -1; align-items: center; }
+      .audit-detail { max-width: 100%; text-align: left; }
+      .modal-wrap { padding: 10px; }
+      .modal-card { padding: 16px 14px; max-height: 90vh; }
+      .chk-list label { font-size: 15px; padding: 6px 10px; }
+    }
   </style>
 </head>
 <body>
@@ -248,14 +323,16 @@
   <header>
     <h1>28時間管理</h1>
     <nav>
-      <button data-screen="dash" class="active">ダッシュボード</button>
-      <button data-screen="input">打刻入力</button>
-      <button data-screen="detail">スタッフ詳細</button>
-      <button data-screen="member">メンバー</button>
-      <button data-screen="vacation">長期休業</button>
-      <button data-screen="users" id="navUsers" style="display:none">ユーザー</button>
-      <button data-screen="notify" id="navNotify" style="display:none">通知</button>
-      <button data-screen="audit" id="navAudit" style="display:none">操作ログ</button>
+      <button data-screen="dash" class="active"><span class="lf">ダッシュボード</span><span class="ls">ホーム</span></button>
+      <button data-screen="input"><span class="lf">打刻入力</span><span class="ls">打刻</span></button>
+      <button data-screen="detail"><span class="lf">スタッフ詳細</span><span class="ls">詳細</span></button>
+      <button data-screen="member" class="nav-sub">メンバー</button>
+      <button data-screen="vacation" class="nav-sub">長期休業</button>
+      <button data-screen="users" class="nav-sub" id="navUsers" style="display:none">ユーザー</button>
+      <button data-screen="notify" class="nav-sub" id="navNotify" style="display:none">通知</button>
+      <button data-screen="audit" class="nav-sub" id="navAudit" style="display:none">操作ログ</button>
+      <!-- スマホ幅だけ出る。管理用の画面（.nav-sub）をまとめて開く -->
+      <button type="button" class="nav-more" id="navMore">その他</button>
     </nav>
     <div class="who"><b id="whoName">—</b><button id="logoutBtn">ログアウト</button></div>
   </header>
@@ -270,13 +347,14 @@
         <button class="btn" id="dashRefresh">更新</button>
         <div class="hint">「基準日」時点の直近状況を表示します。</div>
       </div>
+      <div class="dash-stale" id="dashStale" style="display:none"></div>
       <div class="cards" id="dashCards"><div class="loading">読み込み中…</div></div>
     </section>
 
     <!-- ============ 画面2: 打刻入力 ============ -->
     <section id="input" class="screen">
       <div class="input-grid">
-        <div>
+        <div class="in-main">
           <div class="editing-note" id="editNote"></div>
           <div class="toolbar">
             <div class="field"><label>スタッフ</label><select id="inStaff"></select></div>
@@ -290,6 +368,7 @@
             <div class="timefield"><label>休憩</label><div class="timebox" data-time="brk"><span class="ph">--:--</span></div></div>
           </div>
 
+          <div class="in-rest">
           <label class="overnight-toggle">
             <input type="checkbox" id="inOvernight">
             <span>日をまたぐ（終了が翌日）</span>
@@ -308,9 +387,10 @@
 
           <h3 id="logListTitle">記録一覧</h3>
           <div id="logList"><div class="loading">スタッフを選ぶと記録が表示されます。</div></div>
+          </div>
         </div>
 
-        <div>
+        <div class="in-kp">
           <div class="hint" id="kpTarget">入力する枠（開始/終了/休憩）を選んでください</div>
           <div class="keypad" id="keypad">
             <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
@@ -475,7 +555,31 @@
       return SESSION;
     }
     function saveSession(s) { SESSION = s; localStorage.setItem(SESS_KEY, JSON.stringify(s)); }
-    function clearSession() { SESSION = null; localStorage.removeItem(SESS_KEY); }
+    function clearSession() { SESSION = null; localStorage.removeItem(SESS_KEY); dashCacheClear(); }
+
+    // ====== 前回表示のキャッシュ ======
+    // GASは1回の通信に毎回3〜5秒かかる（中身の大小に関係ない固定の待ち）。起動のたびに
+    // 「読み込み中…」で待たせないよう、前回の起動結果を端末に置いて先に出し、裏で最新に差し替える。
+    // 同じ会社・同じユーザー・同じ基準日のときだけ使う（日付が変わったら古い数字は出さない）。
+    // 端末の保存領域が使えない環境（プライベートモード等）では黙って使わない。
+    const DASH_CACHE_KEY = 'k28.dashCache';
+    function dashCacheLoad(today) {
+      try {
+        const c = JSON.parse(localStorage.getItem(DASH_CACHE_KEY) || 'null');
+        if (!c || !SESSION || c.tenantId !== SESSION.tenantId || c.userId !== SESSION.userId) return null;
+        if (!c.data || !c.data.dashboard || c.data.dashboard.today !== today) return null;
+        return c;
+      } catch (e) { return null; }
+    }
+    function dashCacheSave(data) {
+      try {
+        if (!SESSION) return;
+        localStorage.setItem(DASH_CACHE_KEY, JSON.stringify({
+          tenantId: SESSION.tenantId, userId: SESSION.userId, savedAt: Date.now(), data
+        }));
+      } catch (e) { /* 保存できなくても動作には関係ない */ }
+    }
+    function dashCacheClear() { try { localStorage.removeItem(DASH_CACHE_KEY); } catch (e) {} }
     const token = () => (SESSION && SESSION.token) || '';
     const isAdmin = () => !!(SESSION && SESSION.role === '管理者');
 
@@ -616,8 +720,29 @@
     const fmtMin = (min) => { const sg = min < 0 ? '-' : ''; const v = Math.abs(min); return `${sg}${Math.floor(v/60)}:${pad2(v%60)}`; };
 
     // ====== タブ ======
-    $$('nav button').forEach(btn => btn.addEventListener('click', () => {
+    // スマホの「その他」：管理用の画面をタブバーの上に開く。開いた位置は下から積む。
+    function closeMore() {
+      $('nav').classList.remove('more-open');
+      const bd = $('.more-backdrop'); if (bd) bd.remove();
+    }
+    $('#navMore').addEventListener('click', () => {
+      const nav = $('nav');
+      if (nav.classList.contains('more-open')) { closeMore(); return; }
+      nav.classList.add('more-open');
+      const items = $$('nav .nav-sub').filter(b => b.style.display !== 'none');
+      const barH = nav.getBoundingClientRect().height;
+      items.reverse().forEach((b, i) => { b.style.bottom = (barH + 8 + i * 53) + 'px'; });
+      const bd = document.createElement('div');
+      bd.className = 'more-backdrop';
+      bd.addEventListener('click', closeMore);
+      document.body.appendChild(bd);
+    });
+    $$('nav button[data-screen]').forEach(btn => btn.addEventListener('click', () => {
+      closeMore();
       $$('nav button').forEach(b => b.classList.remove('active'));
+      // 管理用の画面を開いているときは「その他」を選択中に見せる
+      if (btn.classList.contains('nav-sub')) $('#navMore').classList.add('active');
+      window.scrollTo(0, 0);
       btn.classList.add('active');
       $$('.screen').forEach(s => s.classList.remove('active'));
       $('#' + btn.dataset.screen).classList.add('active');
@@ -629,6 +754,31 @@
       if (btn.dataset.screen === 'audit') loadAudit();
       if (btn.dataset.screen === 'notify') loadNotify();
     }));
+
+    // ====== スマホ用：表をカード表示にする下準備 ======
+    // 各セルに列見出しを data-label で持たせる（CSSがスマホ幅のときだけ見出しを左に出す）。
+    // 表は各画面がその都度 innerHTML で作り直すので、描画のたびに監視で付け直す。
+    // シミュレーションの表と、行数の多いスタッフ詳細（4列で収まる）はそのまま。
+    function labelTables_() {
+      $$('table:not(.sim-table):not([data-labeled])').forEach(t => {
+        if (t.closest('#detTableWrap')) return;
+        t.setAttribute('data-labeled', '1');
+        t.classList.add('rtable');
+        const heads = Array.from(t.querySelectorAll('thead th')).map(th => th.textContent.trim());
+        t.querySelectorAll('tbody tr').forEach(tr => {
+          Array.from(tr.children).forEach((td, i) => {
+            td.setAttribute('data-label', td.colSpan > 1 ? '' : (heads[i] || ''));
+          });
+        });
+      });
+    }
+    if (typeof MutationObserver !== 'undefined') {
+      let pend = false;
+      new MutationObserver(() => {
+        if (pend) return; pend = true;
+        setTimeout(() => { pend = false; try { labelTables_(); } catch (e) { console.error(e); } }, 0);
+      }).observe(document.body, { childList: true, subtree: true });
+    }
 
     // ====== スタッフ一覧（共有・打刻/詳細の選択肢） ======
     let STAFF = [];
@@ -652,20 +802,53 @@
     // 日付文字列 → エポック日数（内部計算のみ。値は文字列で扱う方針を維持）
     function epochDayF(apiDate) { const [y, m, d] = apiDate.split('/').map(Number); return Math.floor(Date.UTC(y, m - 1, d) / 86400000); }
     function dowJ(ed) { return DOW[((ed % 7) + 4) % 7]; }
-    // 枠(d)=upperMin−Σ(d-6..d-1)。Core.gs の calcDailyAllowance_ と同一式（受け入れテストで一致を検証済み）。
-    function dailyAllowanceMin(minsByDay, dayEd, upperMin) {
-      let s = 0; for (let k = 1; k <= 6; k++) s += (minsByDay[dayEd - k] || 0);
-      return upperMin - s;
+    // その日に働ける枠。Core.gs の calcDailyAllowance_ と同一式（ダッシュボードの「明日働ける残り」もこれ）。
+    // 枠(d) = min(8時間, dを含む7つの窓それぞれの「上限 − d以外の6日の合計」)。
+    // 窓の上限は7日すべてが休業期間なら40時間、それ以外は通常上限。vacRanges は [{fromEd, toEd}]。
+    const DAILY_MAX_MIN = 480;
+    function dailyAllowanceMin(minsByDay, dayEd, upperMin, vacRanges) {
+      const isVac = (ed) => (vacRanges || []).some(v => ed >= v.fromEd && ed <= v.toEd);
+      let best = DAILY_MAX_MIN;
+      for (let s = dayEd - 6; s <= dayEd; s++) {
+        let others = 0, allVac = true;
+        for (let k = 0; k < 7; k++) {
+          const ed = s + k;
+          if (!isVac(ed)) allVac = false;
+          if (ed !== dayEd) others += (minsByDay[ed] || 0);
+        }
+        const limit = allVac ? Math.max(2400, upperMin) : upperMin;
+        if (limit - others < best) best = limit - others;
+      }
+      return best;
     }
 
     // ダッシュボード欄の状態表示。やり直し中と失敗を同じ場所に出す。
-    const dashWaiting = () => { $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>'; };
+    // 前回の表示（キャッシュ・タブ切替前の画面）が出ている間は、カードを消さずに上の一行で知らせる。
+    let DASH_SHOWING = false;   // カードが表示されているか
+    function dashStale(msg, isErr) {
+      const el = $('#dashStale');
+      if (!msg) { el.style.display = 'none'; el.innerHTML = ''; return; }
+      el.style.display = ''; el.className = 'dash-stale' + (isErr ? ' err' : ''); el.innerHTML = msg;
+    }
+    const dashWaiting = () => {
+      if (DASH_SHOWING) { dashStale('最新を読み込み中…（表示は前回の内容です）'); return; }
+      $('#dashCards').innerHTML = '<div class="loading">読み込み中…</div>';
+    };
     const dashRetrying = () => {
+      if (DASH_SHOWING) { dashStale('Googleの応答が遅いので、もう一度試しています…（表示は前回の内容です）'); return; }
       $('#dashCards').innerHTML = '<div class="loading">Googleの応答が遅いので、もう一度試しています…</div>';
     };
     // 失敗しても手動で押し直せるようにする（「再読み込みしてください」で終わらせない）。
     // スタッフ一覧をまだ取れていなければ起動からやり直す。
     function dashFailed(msg) {
+      if (DASH_SHOWING) {
+        // 前回の内容は残し、最新ではないことをはっきり出す
+        dashStale(`⚠ 最新を読み込めませんでした（表示は前回の内容です）: ${esc(msg)} `
+          + '<button class="btn ghost small" id="dashRetry">もう一度読み込む</button>', true);
+        const b = $('#dashRetry');
+        if (b) b.addEventListener('click', () => (STAFF.length ? loadDashboard() : boot()));
+        return;
+      }
       $('#dashCards').innerHTML = `<div class="loading">エラー: ${esc(msg)}</div>`
         + '<div style="text-align:center;margin-top:14px"><button class="btn" id="dashRetry">もう一度読み込む</button></div>';
       const b = $('#dashRetry');
@@ -674,15 +857,22 @@
 
     async function loadDashboard() {
       const today = dateInputToApi($('#dashToday').value) || todayApi();
+      // 別の基準日を開くときは前回の数字を残さない（日付と中身が食い違って見えるため）
+      if (DASH_SHOWING && DASH_TODAY !== today) DASH_SHOWING = false;
       dashWaiting();
       try {
         renderDashboard(await apiGet('getDashboard', { today }, dashRetrying));
+        dashStale('');
       } catch (e) { dashFailed(e.message); }
     }
 
     // 描画だけを切り出す。起動時は getBoot がまとめて取ってきた分をここに渡す。
+    let DASH_CARDS = {};        // staffId -> カード（シミュレーションの材料を持つ）
     function renderDashboard(d) {
       DASH_TODAY = d.today;
+      DASH_CARDS = {};
+      d.cards.forEach(c => { DASH_CARDS[c.staffId] = c; });
+      DASH_SHOWING = true;
       $('#dashBanner').classList.toggle('show', d.anyOver);
       $('#dashBanner').textContent = d.anyOver ? '⚠ 28時間超過のスタッフがいます' : '';
       // 「常時40時間」の設定が残っている人がいると、休業が終わっても40時間で判定され続ける。
@@ -712,7 +902,8 @@
           <div class="top"><span class="name">${esc(c.name)}</span><span class="badges"><span class="badge ${c.status}">${c.status}</span>${recoverBadge}</span></div>
           <div class="metrics">
             <div class="metric"><div class="k">直近7日 実績（今日まで）</div><div class="v">${c.last7HHMM}</div></div>
-            <div class="metric"><div class="k">明日 働ける残り</div><div class="v ${allowClass}">${c.tomorrowAllowanceHHMM}</div></div>
+            <div class="metric"><div class="k">明日 働ける残り</div><div class="v ${allowClass}">${c.tomorrowAllowanceHHMM}</div>
+              ${c.weekRoomHHMM ? `<div class="week-room">週の残り ${c.weekRoomHHMM}</div>` : ''}</div>
           </div>
           ${recovering ? '<div class="hint" style="margin-top:6px">今日時点で超過中ですが、明日には解消の見込みです（上限まで ' + c.tomorrowAllowanceHHMM + '）。</div>' : ''}
           <div class="worst">${hist}</div>
@@ -735,10 +926,24 @@
         const staff = STAFF.find(s => s.staffId === staffId);
         const upperMin = staff ? staff.upperMin : 1680;
         const base = DASH_TODAY;
-        // 実績は既存API。枠(翌日)に効く直近6日分（base-5..base）を取得。
-        const daily = await apiGet('getDailyMinutes', { staffId, from: addDaysApi(base, -5), to: base });
+        // 枠(翌日以降)に効く直近6日分（base-5..base）の実績と、この人の休業期間。
+        // ダッシュボードのカードが持っているので、GASを呼ばずに即座に開ける。
+        let daily, vacList;
+        const card = DASH_CARDS[staffId];
+        if (card && card.sim) {
+          daily = card.sim.mins; vacList = card.sim.vac;
+        } else {
+          // 旧版のGAS（カードに材料が無い）向けの予備経路
+          const r = await Promise.all([
+            apiGet('getDailyMinutes', { staffId, from: addDaysApi(base, -5), to: base }),
+            apiGet('getVacations')
+          ]);
+          daily = r[0];
+          vacList = r[1].filter(v => v.all || (v.staffIds || []).indexOf(staffId) >= 0);
+        }
         const simMins = {};
         Object.keys(daily).forEach(dt => { simMins[epochDayF(dt)] = daily[dt]; });
+        const vacRanges = vacList.map(v => ({ fromEd: epochDayF(v.from), toEd: epochDayF(v.to) }));
         const rows = [];
         for (let i = 1; i <= 7; i++) {
           const date = addDaysApi(base, i);
@@ -755,8 +960,9 @@
         }
         panel.innerHTML = `<div class="sim-summary" id="simsum-${esc(staffId)}"></div>
           <table class="sim-table"><thead><tr><th>日付</th><th>予定</th><th>働ける枠</th></tr></thead><tbody>${rows.join('')}</tbody></table>
-          <div class="hint">予定を入れると、それ以降の日の枠が即座に変わります（保存はされません・試算専用）。</div>`;
-        SIM[staffId] = { upperMin, base, simMins };
+          <div class="hint">予定を入れると、前後の日の枠が即座に変わります（保存はされません・試算専用）。<br>
+            枠は「1日8時間」と「どの連続7日間も28時間（長期休業で7日すべてが休業中なら40時間）」の両方を満たす長さです。</div>`;
+        SIM[staffId] = { upperMin, base, simMins, vacRanges };
         recalcSim(staffId);
       } catch (e) { panel.innerHTML = `<div class="loading">エラー: ${esc(e.message)}</div>`; }
     }
@@ -776,7 +982,7 @@
       let worst = null;
       trs.forEach(tr => {
         const ed = Number(tr.dataset.ed);
-        const frame = dailyAllowanceMin(st.simMins, ed, st.upperMin);
+        const frame = dailyAllowanceMin(st.simMins, ed, st.upperMin, st.vacRanges);
         const planned = st.simMins[ed] || 0;
         const cell = tr.querySelector('.sim-frame');
         tr.classList.remove('over');
@@ -1375,10 +1581,23 @@
       // 記録一覧(getLogs)は「打刻入力」タブを開いたときに読む。起動時には見えていない画面なので、
       // ここに置くと最初の表示を1本分まるごと遅らせるだけになる。
       const today = dateInputToApi($('#dashToday').value) || todayApi();
-      dashWaiting();
+      // 前回の結果があれば先に出す（裏で最新を取りに行き、届いたら差し替える）
+      DASH_SHOWING = false;
+      const cached = dashCacheLoad(today);
+      if (cached) {
+        try {
+          applyStaff(cached.data.staff);
+          renderDashboard(cached.data.dashboard);
+          const t = new Date(cached.savedAt);
+          dashStale(`最新を読み込み中…（表示は ${t.getHours()}:${pad2(t.getMinutes())} 時点の内容です）`);
+        } catch (e) { console.error(e); DASH_SHOWING = false; dashCacheClear(); }
+      }
+      if (!DASH_SHOWING) dashWaiting();
       STAFF_READY = apiGet('getBoot', { today }, dashRetrying).then((d) => {
         applyStaff(d.staff);
         renderDashboard(d.dashboard);
+        dashStale('');
+        dashCacheSave(d);
       });
       try { await STAFF_READY; }
       catch (e) {
